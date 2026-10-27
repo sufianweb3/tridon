@@ -1,0 +1,18 @@
+node_modules/
+.next/
+out/
+dist/
+target/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+.secrets/
+
+# Local SQLite database, generated master key, and any demo signer material.
+# Never commit these: they contain session tokens and encrypted testnet keys.
+data/
+
+coverage/
+.DS_Store
+Thumbs.db

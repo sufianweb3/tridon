@@ -1,0 +1,24 @@
+{
+  "name": "agentspend",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@12.5.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @agentspend/web dev",
+    "build": "pnpm --filter @agentspend/web build",
+    "start": "pnpm --filter @agentspend/web start",
+    "lint": "pnpm --filter @agentspend/web lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @agentspend/core test && pnpm --filter @agentspend/near test",
+    "test:e2e": "tsx scripts/e2e.ts",
+    "db:reset": "tsx scripts/reset-db.ts",
+    "seed": "tsx scripts/seed.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
