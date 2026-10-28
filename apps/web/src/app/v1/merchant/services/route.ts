@@ -12,13 +12,13 @@ const schema = z.object({
 
 export async function POST(request: Request): Promise<Response> {
   return withApi(async () => {
-    const merchant = merchantFromBearer(request);
+    const merchant = await merchantFromBearer(request);
     const body = await readJson(request, schema);
     const price = decimalToUnits(body.price, "Price");
     if (BigInt(price) > 10_000_000_000n) {
       throw new ApiError(400, "INVALID_AMOUNT", "Demo service prices are capped at $10,000.");
     }
-    const service = createMerchantService({
+    const service = await createMerchantService({
       merchantId: merchant.merchantId,
       name: body.name,
       description: body.description,

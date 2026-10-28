@@ -11,14 +11,14 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   return withApi(async () => {
-    const merchant = merchantFromBearer(request);
+    const merchant = await merchantFromBearer(request);
     const { id } = await params;
-    const row = getMerchantRequest(merchant.merchantId, id);
+    const row = await getMerchantRequest(merchant.merchantId, id);
     if (!row) throw new ApiError(404, "REQUEST_NOT_FOUND", "Payment request not found.");
-    const payment = row.payment_id ? getPayment(row.payment_id) : null;
+    const payment = row.payment_id ? await getPayment(row.payment_id) : null;
     return ok({
       request: merchantRequestView(row),
-      payment: payment ? paymentView(payment) : null,
+      payment: payment ? await paymentView(payment) : null,
     });
   });
 }

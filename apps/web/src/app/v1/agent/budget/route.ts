@@ -9,13 +9,13 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
-    const agent = agentFromBearer(request);
-    const budget = budgetForAgent(agent.agentId);
-    const policy = loadPolicyForAgent(agent.agentId);
+    const agent = await agentFromBearer(request);
+    const budget = await budgetForAgent(agent.agentId);
+    const policy = await loadPolicyForAgent(agent.agentId);
     if (!budget || !policy) {
       return ok({ budget: null, note: "No active budget for this agent." });
     }
-    const usage = usageForPolicy({
+    const usage = await usageForPolicy({
       policyId: policy.row.id,
       now: now(),
       merchantId: "",

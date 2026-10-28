@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ApiError, ok, readJson, requestIp, withApi } from "@/lib/api";
 import { createMerchantSession, merchantCookie } from "@/lib/auth";
 import { appConfig } from "@/lib/config";
-import { getDb } from "@/lib/db";
+import { queryOne } from "@/lib/db";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 const schema = z.object({ merchantId: z.string().min(1).max(64) });
@@ -26,15 +26,14 @@ export async function POST(request: Request): Promise<Response> {
       throw new ApiError(429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
     }
     const { merchantId } = await readJson(request, schema);
-    const merchant = getDb()
-      .prepare("SELECT id, name, payout_account FROM merchants WHERE id = ? AND active = 1")
-      .get(merchantId) as
-      | { id: string; name: string; payout_account: string }
-      | undefined;
+    const merchant = await queryOne<{ id: string; name: string; payout_account: string }>(
+      "SELECT id, name, payout_account FROM merchants WHERE id = ? AND active = 1",
+      [merchantId],
+    );
     if (!merchant) {
       throw new ApiError(404, "MERCHANT_NOT_FOUND", "Merchant not found.");
     }
-    const session = createMerchantSession(merchant.id);
+    const session = await createMerchantSession(merchant.id);
     const response = ok({
       merchant: {
         id: merchant.id,

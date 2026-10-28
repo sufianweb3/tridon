@@ -171,8 +171,8 @@ const THREATS: Array<{ id: string; title: string; body: string }> = [
 
 export default async function SecurityPage() {
   const { user } = await requireUserPage();
-  const vault = vaultForUser(user.id);
-  const policy = policyForUser(user.id);
+  const vault = await vaultForUser(user.id);
+  const policy = await policyForUser(user.id);
   const live = vault?.rail === "testnet";
 
   return (

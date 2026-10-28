@@ -1,7 +1,7 @@
 import { formatUsd } from "@agentspend/core";
 import { ApiError } from "./api";
 import { randomId } from "./crypto";
-import { getDb, now } from "./db";
+import { execute, now, query, queryOne } from "./db";
 import { appConfig } from "./config";
 import { merchantSummary, merchantPayments } from "./payments";
 import { paymentView } from "./views";
@@ -56,26 +56,31 @@ export function merchantRequestView(row: MerchantRequestRow): {
   };
 }
 
-export function createMerchantRequest(input: {
+export async function createMerchantRequest(input: {
   merchantId: string;
   serviceId: string;
   idempotencyKey: string;
   requestExpiry?: number;
-}): { request: MerchantRequestRow; replayed: boolean } {
+}): Promise<{ request: MerchantRequestRow; replayed: boolean }> {
   const key = input.idempotencyKey.trim();
   if (!key || key.length > appConfig.limits.maxIdempotencyKeyLength) {
     throw new ApiError(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be 1-128 characters.");
   }
-  const existing = getDb()
-    .prepare("SELECT * FROM merchant_requests WHERE merchant_id = ? AND idempotency_key = ?")
-    .get(input.merchantId, key) as MerchantRequestRow | undefined;
+  const existing = await queryOne<MerchantRequestRow>(
+    "SELECT * FROM merchant_requests WHERE merchant_id = ? AND idempotency_key = ?",
+    [input.merchantId, key],
+  );
   if (existing) return { request: existing, replayed: true };
 
-  const service = getDb()
-    .prepare("SELECT * FROM merchant_services WHERE id = ? AND merchant_id = ? AND active = 1")
-    .get(input.serviceId, input.merchantId) as
-    | { id: string; price: string; asset: string; network: string }
-    | undefined;
+  const service = await queryOne<{
+    id: string;
+    price: string;
+    asset: string;
+    network: string;
+  }>("SELECT * FROM merchant_services WHERE id = ? AND merchant_id = ? AND active = 1", [
+    input.serviceId,
+    input.merchantId,
+  ]);
   if (!service) {
     throw new ApiError(404, "SERVICE_NOT_FOUND", "Service not found for this merchant.");
   }
@@ -91,13 +96,12 @@ export function createMerchantRequest(input: {
     );
   }
   const id = randomId("mreq_");
-  getDb()
-    .prepare(
-      `INSERT INTO merchant_requests (id, merchant_id, service_id, amount, asset, network,
-        status, idempotency_key, request_expiry, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
-    )
-    .run(
+  const inserted = await execute(
+    `INSERT INTO merchant_requests (id, merchant_id, service_id, amount, asset, network,
+      status, idempotency_key, request_expiry, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+     ON CONFLICT(merchant_id, idempotency_key) DO NOTHING`,
+    [
       id,
       input.merchantId,
       service.id,
@@ -107,37 +111,49 @@ export function createMerchantRequest(input: {
       key,
       requestExpiry,
       now(),
+    ],
+  );
+  if (inserted === 0) {
+    const raced = await queryOne<MerchantRequestRow>(
+      "SELECT * FROM merchant_requests WHERE merchant_id = ? AND idempotency_key = ?",
+      [input.merchantId, key],
     );
-  const row = getDb()
-    .prepare("SELECT * FROM merchant_requests WHERE id = ?")
-    .get(id) as unknown as MerchantRequestRow;
+    if (!raced) throw new Error("merchant request insert conflicted but no row exists");
+    return { request: raced, replayed: true };
+  }
+  const row = await queryOne<MerchantRequestRow>("SELECT * FROM merchant_requests WHERE id = ?", [
+    id,
+  ]);
+  if (!row) throw new Error("merchant request disappeared after insert");
   return { request: row, replayed: false };
 }
 
-export function getMerchantRequest(
+export async function getMerchantRequest(
   merchantId: string,
   requestId: string,
-): MerchantRequestRow | null {
-  const row = getDb()
-    .prepare("SELECT * FROM merchant_requests WHERE id = ? AND merchant_id = ?")
-    .get(requestId, merchantId) as MerchantRequestRow | undefined;
-  return row ?? null;
+): Promise<MerchantRequestRow | null> {
+  return queryOne<MerchantRequestRow>(
+    "SELECT * FROM merchant_requests WHERE id = ? AND merchant_id = ?",
+    [requestId, merchantId],
+  );
 }
 
-export function listMerchantRequests(merchantId: string, limit = 25): MerchantRequestRow[] {
-  return getDb()
-    .prepare(
-      "SELECT * FROM merchant_requests WHERE merchant_id = ? ORDER BY created_at DESC LIMIT ?",
-    )
-    .all(merchantId, limit) as unknown as MerchantRequestRow[];
+export async function listMerchantRequests(
+  merchantId: string,
+  limit = 25,
+): Promise<MerchantRequestRow[]> {
+  return query<MerchantRequestRow>(
+    "SELECT * FROM merchant_requests WHERE merchant_id = ? ORDER BY created_at DESC LIMIT ?",
+    [merchantId, limit],
+  );
 }
 
-export function createMerchantService(input: {
+export async function createMerchantService(input: {
   merchantId: string;
   name: string;
   description: string;
   price: string;
-}): { id: string; name: string; price: string } {
+}): Promise<{ id: string; name: string; price: string }> {
   const name = input.name.trim();
   if (name.length < 2 || name.length > 64) {
     throw new ApiError(400, "INVALID_SERVICE", "Service name must be 2-64 characters.");
@@ -146,12 +162,10 @@ export function createMerchantService(input: {
     throw new ApiError(400, "INVALID_AMOUNT", "Price must be a positive integer in base units.");
   }
   const id = randomId("svc_");
-  getDb()
-    .prepare(
-      `INSERT INTO merchant_services (id, merchant_id, name, description, price, asset, network, active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    )
-    .run(
+  await execute(
+    `INSERT INTO merchant_services (id, merchant_id, name, description, price, asset, network, active, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [
       id,
       input.merchantId,
       name,
@@ -160,11 +174,12 @@ export function createMerchantService(input: {
       appConfig.token.symbol,
       appConfig.network,
       now(),
-    );
+    ],
+  );
   return { id, name, price: input.price };
 }
 
-export function merchantDashboard(merchantId: string): {
+export async function merchantDashboard(merchantId: string): Promise<{
   summary: {
     gross: string;
     merchantFee: string;
@@ -183,22 +198,23 @@ export function merchantDashboard(merchantId: string): {
     asset: string;
     network: string;
   }>;
-  payments: ReturnType<typeof paymentView>[];
+  payments: Awaited<ReturnType<typeof paymentView>>[];
   requests: ReturnType<typeof merchantRequestView>[];
-  webhooks: ReturnType<typeof listWebhookEndpoints>;
-  deliveries: ReturnType<typeof listWebhookDeliveries>;
-} {
-  const summary = merchantSummary(merchantId);
-  const services = getDb()
-    .prepare("SELECT * FROM merchant_services WHERE merchant_id = ? AND active = 1 ORDER BY created_at")
-    .all(merchantId) as unknown as Array<{
+  webhooks: Awaited<ReturnType<typeof listWebhookEndpoints>>;
+  deliveries: Awaited<ReturnType<typeof listWebhookDeliveries>>;
+}> {
+  const summary = await merchantSummary(merchantId);
+  const services = await query<{
     id: string;
     name: string;
     description: string;
     price: string;
     asset: string;
     network: string;
-  }>;
+  }>("SELECT * FROM merchant_services WHERE merchant_id = ? AND active = 1 ORDER BY created_at", [
+    merchantId,
+  ]);
+  const payments = await merchantPayments(merchantId, 50);
   return {
     summary: {
       gross: summary.gross.toString(),
@@ -218,10 +234,10 @@ export function merchantDashboard(merchantId: string): {
       asset: service.asset,
       network: service.network,
     })),
-    payments: merchantPayments(merchantId, 50).map(paymentView),
-    requests: listMerchantRequests(merchantId).map(merchantRequestView),
-    webhooks: listWebhookEndpoints(merchantId),
-    deliveries: listWebhookDeliveries(merchantId, 25),
+    payments: await Promise.all(payments.map(paymentView)),
+    requests: (await listMerchantRequests(merchantId)).map(merchantRequestView),
+    webhooks: await listWebhookEndpoints(merchantId),
+    deliveries: await listWebhookDeliveries(merchantId, 25),
   };
 }
 

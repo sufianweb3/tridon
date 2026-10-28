@@ -12,7 +12,7 @@ const schema = z.object({
 
 export async function POST(request: Request): Promise<Response> {
   return withApi(async () => {
-    const merchant = merchantFromBearer(request);
+    const merchant = await merchantFromBearer(request);
     const limit = checkRateLimit(
       `merchant-api:${merchant.merchantId}:${requestIp(request)}`,
       appConfig.limits.agentRequestsPerMinute,
@@ -30,7 +30,7 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
     const body = await readJson(request, schema);
-    const result = createMerchantRequest({
+    const result = await createMerchantRequest({
       merchantId: merchant.merchantId,
       serviceId: body.service_id,
       idempotencyKey: key,

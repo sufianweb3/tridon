@@ -35,8 +35,8 @@ const schema = z.object({
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireUserApi(request);
-    const policy = policyForUser(user.id);
-    return ok({ policy: policy ? policyView(policy) : null });
+    const policy = await policyForUser(user.id);
+    return ok({ policy: policy ? await policyView(policy) : null });
   });
 }
 

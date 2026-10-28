@@ -42,7 +42,7 @@ function Code({ children }: { children: string }) {
 
 export default async function MerchantIntegrationsPage() {
   const { merchant, csrf } = await requireMerchantPage();
-  const dashboard = merchantDashboard(merchant.merchantId);
+  const dashboard = await merchantDashboard(merchant.merchantId);
   const { services, requests, webhooks, deliveries, payments } = dashboard;
 
   return (

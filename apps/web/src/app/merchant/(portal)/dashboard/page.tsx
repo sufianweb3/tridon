@@ -28,7 +28,7 @@ export const dynamic = "force-dynamic";
 
 export default async function MerchantDashboardPage() {
   const { merchant } = await requireMerchantPage();
-  const dashboard = merchantDashboard(merchant.merchantId);
+  const dashboard = await merchantDashboard(merchant.merchantId);
   const { summary, payments, requests, services, webhooks, deliveries } = dashboard;
   const rail = payments[0]?.rail ?? "testnet";
   const openRequests = requests.filter((request) => request.status === "open");

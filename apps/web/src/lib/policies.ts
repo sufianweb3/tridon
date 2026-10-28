@@ -1,7 +1,7 @@
 import type { ApprovalMode, UnknownMerchantMode } from "@agentspend/core";
 import { ApiError } from "./api";
 import { audit } from "./audit";
-import { getDb, now, withTransaction } from "./db";
+import { execute, now, query, queryOne, withTransaction } from "./db";
 import {
   approvalModeLabel,
   contractPolicyJson,
@@ -96,7 +96,7 @@ function amount(value: string, label: string, allowZero = true): string {
   return parsed.toString();
 }
 
-function validateSpec(input: PolicySpecInput): PolicySpecInput {
+async function validateSpec(input: PolicySpecInput): Promise<PolicySpecInput> {
   const name = input.name.trim();
   if (name.length < 2 || name.length > 64) {
     throw new ApiError(400, "INVALID_POLICY_NAME", "Policy name must be 2-64 characters.");
@@ -134,9 +134,10 @@ function validateSpec(input: PolicySpecInput): PolicySpecInput {
       throw new ApiError(400, "INVALID_POLICY", "A merchant appears twice in the policy.");
     }
     seen.add(rule.merchantId);
-    const merchant = getDb()
-      .prepare("SELECT id FROM merchants WHERE id = ? AND active = 1")
-      .get(rule.merchantId) as { id: string } | undefined;
+    const merchant = await queryOne<{ id: string }>(
+      "SELECT id FROM merchants WHERE id = ? AND active = 1",
+      [rule.merchantId],
+    );
     if (!merchant) {
       throw new ApiError(400, "INVALID_POLICY", `Unknown merchant ${rule.merchantId}.`);
     }
@@ -177,30 +178,28 @@ function validateSpec(input: PolicySpecInput): PolicySpecInput {
   };
 }
 
-export function policyForUser(userId: string): LoadedPolicy | null {
-  const vault = vaultForUser(userId);
+export async function policyForUser(userId: string): Promise<LoadedPolicy | null> {
+  const vault = await vaultForUser(userId);
   if (!vault) return null;
   return loadPolicyForVault(vault.id);
 }
 
-export function policyView(policy: LoadedPolicy): PolicyView {
+export async function policyView(policy: LoadedPolicy): Promise<PolicyView> {
   const vault = policy.row.vault_id
-    ? (getDb()
-        .prepare("SELECT account_id, rail FROM vaults WHERE id = ?")
-        .get(policy.row.vault_id) as { account_id: string; rail: string } | undefined)
-    : undefined;
-  const summary = budgetSummary({
+    ? await queryOne<{ account_id: string; rail: string }>(
+        "SELECT account_id, rail FROM vaults WHERE id = ?",
+        [policy.row.vault_id],
+      )
+    : null;
+  const summary = await budgetSummary({
     policyId: policy.row.id,
     totalBudget: BigInt(policy.row.total_budget),
     now: now(),
   });
-  const merchantNames = new Map(
-    (
-      getDb()
-        .prepare("SELECT id, name, category FROM merchants")
-        .all() as unknown as Array<{ id: string; name: string; category: string }>
-    ).map((merchant) => [merchant.id, merchant]),
+  const merchantRows = await query<{ id: string; name: string; category: string }>(
+    "SELECT id, name, category FROM merchants",
   );
+  const merchantNames = new Map(merchantRows.map((merchant) => [merchant.id, merchant]));
   const rules = policy.rules
     .filter((rule) => rule.active === 1)
     .map((rule) => ({
@@ -250,10 +249,10 @@ export function policyView(policy: LoadedPolicy): PolicyView {
   };
 }
 
-function writeSpec(input: {
+async function writeSpec(input: {
   policy: LoadedPolicy;
   spec: PolicySpecInput;
-}): { removedMerchantIds: string[] } {
+}): Promise<{ removedMerchantIds: string[] }> {
   const { policy, spec } = input;
   const timestamp = now();
   const keep = new Set(spec.rules.map((rule) => rule.merchantId));
@@ -261,13 +260,11 @@ function writeSpec(input: {
     .filter((rule) => rule.active === 1 && !keep.has(rule.merchant_id))
     .map((rule) => rule.merchant_id);
 
-  getDb()
-    .prepare(
-      `UPDATE policies SET name = ?, total_budget = ?, per_tx_limit = ?, daily_limit = ?,
-         weekly_limit = ?, monthly_limit = ?, unknown_merchant_mode = ?, unknown_merchant_cap = ?,
-         approval_mode = ?, updated_at = ? WHERE id = ?`,
-    )
-    .run(
+  await execute(
+    `UPDATE policies SET name = ?, total_budget = ?, per_tx_limit = ?, daily_limit = ?,
+       weekly_limit = ?, monthly_limit = ?, unknown_merchant_mode = ?, unknown_merchant_cap = ?,
+       approval_mode = ?, updated_at = ? WHERE id = ?`,
+    [
       spec.name,
       spec.totalBudget,
       spec.perTxLimit,
@@ -279,32 +276,30 @@ function writeSpec(input: {
       spec.approvalMode,
       timestamp,
       policy.row.id,
-    );
+    ],
+  );
 
-  getDb()
-    .prepare("UPDATE policy_merchant_rules SET active = 0 WHERE policy_id = ?")
-    .run(policy.row.id);
+  await execute("UPDATE policy_merchant_rules SET active = 0 WHERE policy_id = ?", [policy.row.id]);
 
   for (const rule of spec.rules) {
-    const merchant = getDb()
-      .prepare("SELECT payout_account FROM merchants WHERE id = ?")
-      .get(rule.merchantId) as { payout_account: string } | undefined;
+    const merchant = await queryOne<{ payout_account: string }>(
+      "SELECT payout_account FROM merchants WHERE id = ?",
+      [rule.merchantId],
+    );
     if (!merchant) continue;
-    getDb()
-      .prepare(
-        `INSERT INTO policy_merchant_rules (id, policy_id, merchant_id, payout_account,
-           per_tx_limit, window_limit, window_secs, allowlisted, requires_approval, active, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(policy_id, merchant_id) DO UPDATE SET
-           payout_account = excluded.payout_account,
-           per_tx_limit = excluded.per_tx_limit,
-           window_limit = excluded.window_limit,
-           window_secs = excluded.window_secs,
-           allowlisted = excluded.allowlisted,
-           requires_approval = excluded.requires_approval,
-           active = 1`,
-      )
-      .run(
+    await execute(
+      `INSERT INTO policy_merchant_rules (id, policy_id, merchant_id, payout_account,
+         per_tx_limit, window_limit, window_secs, allowlisted, requires_approval, active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+       ON CONFLICT(policy_id, merchant_id) DO UPDATE SET
+         payout_account = excluded.payout_account,
+         per_tx_limit = excluded.per_tx_limit,
+         window_limit = excluded.window_limit,
+         window_secs = excluded.window_secs,
+         allowlisted = excluded.allowlisted,
+         requires_approval = excluded.requires_approval,
+         active = 1`,
+      [
         `rule_${policy.row.id}_${rule.merchantId}`,
         policy.row.id,
         rule.merchantId,
@@ -315,7 +310,8 @@ function writeSpec(input: {
         rule.allowlisted ? 1 : 0,
         rule.requiresApproval ? 1 : 0,
         timestamp,
-      );
+      ],
+    );
   }
 
   return { removedMerchantIds };
@@ -326,8 +322,8 @@ export async function updatePolicy(input: {
   policyId?: string;
   spec: PolicySpecInput;
 }): Promise<{ policy: PolicyView; txHash: string | null; version: number }> {
-  const spec = validateSpec(input.spec);
-  const policy = policyForUser(input.userId);
+  const spec = await validateSpec(input.spec);
+  const policy = await policyForUser(input.userId);
   if (!policy) throw new ApiError(404, "POLICY_NOT_FOUND", "Policy not found.");
   if (input.policyId && input.policyId !== policy.row.id) {
     throw new ApiError(404, "POLICY_NOT_FOUND", "Policy not found.");
@@ -336,9 +332,9 @@ export async function updatePolicy(input: {
     throw new ApiError(409, "POLICY_REVOKED", "A revoked policy cannot be edited.");
   }
 
-  const { removedMerchantIds } = withTransaction(() => {
-    const result = writeSpec({ policy, spec });
-    audit({
+  const { removedMerchantIds } = await withTransaction(async () => {
+    const result = await writeSpec({ policy, spec });
+    await audit({
       userId: input.userId,
       actor: "user",
       eventType: "policy.updated",
@@ -360,23 +356,25 @@ export async function updatePolicy(input: {
       policyId: policy.row.id,
       removedMerchantIds,
     });
-    audit({
+    await audit({
       userId: input.userId,
       actor: "chain",
       eventType: "policy.synced",
       detail: { policyId: policy.row.id, txHash: synced.txHash, version: synced.version },
     });
-    const fresh = loadPolicyById(policy.row.id)!;
-    return { policy: policyView(fresh), txHash: synced.txHash, version: synced.version };
+    const fresh = await loadPolicyById(policy.row.id);
+    if (!fresh) throw new Error("policy disappeared after sync");
+    return { policy: await policyView(fresh), txHash: synced.txHash, version: synced.version };
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown chain error";
     // Fail closed. The local copy is paused immediately; the chain pause is
     // attempted as well. Even if the chain call fails, the backend will deny.
-    withTransaction(() => {
-      getDb()
-        .prepare("UPDATE policies SET status = 'paused', updated_at = ? WHERE id = ?")
-        .run(now(), policy.row.id);
-      audit({
+    await withTransaction(async () => {
+      await execute("UPDATE policies SET status = 'paused', updated_at = ? WHERE id = ?", [
+        now(),
+        policy.row.id,
+      ]);
+      await audit({
         userId: input.userId,
         actor: "system",
         eventType: "policy.sync_failed",
@@ -404,7 +402,7 @@ export async function setPolicyPaused(input: {
   userId: string;
   paused: boolean;
 }): Promise<PolicyView> {
-  const policy = policyForUser(input.userId);
+  const policy = await policyForUser(input.userId);
   if (!policy) throw new ApiError(404, "POLICY_NOT_FOUND", "Policy not found.");
   if (policy.row.status === "revoked") {
     throw new ApiError(409, "POLICY_REVOKED", "A revoked policy cannot be resumed.");
@@ -423,18 +421,22 @@ export async function setPolicyPaused(input: {
         : `The on-chain ${input.paused ? "pause" : "resume"} failed.`,
     );
   }
-  withTransaction(() => {
-    getDb()
-      .prepare("UPDATE policies SET status = ?, updated_at = ? WHERE id = ?")
-      .run(input.paused ? "paused" : "active", now(), policy.row.id);
-    audit({
+  await withTransaction(async () => {
+    await execute("UPDATE policies SET status = ?, updated_at = ? WHERE id = ?", [
+      input.paused ? "paused" : "active",
+      now(),
+      policy.row.id,
+    ]);
+    await audit({
       userId: input.userId,
       actor: "user",
       eventType: input.paused ? "policy.paused" : "policy.resumed",
       detail: { policyId: policy.row.id },
     });
   });
-  return policyView(loadPolicyById(policy.row.id)!);
+  const fresh = await loadPolicyById(policy.row.id);
+  if (!fresh) throw new Error("policy disappeared after pause");
+  return policyView(fresh);
 }
 
 export async function revokePolicy(input: {
@@ -444,7 +446,7 @@ export async function revokePolicy(input: {
   if (input.confirmation !== "REVOKE") {
     throw new ApiError(400, "CONFIRMATION_REQUIRED", 'Type REVOKE to revoke the policy.');
   }
-  const policy = policyForUser(input.userId);
+  const policy = await policyForUser(input.userId);
   if (!policy) throw new ApiError(404, "POLICY_NOT_FOUND", "Policy not found.");
   if (policy.row.status === "revoked") return policyView(policy);
   try {
@@ -458,18 +460,21 @@ export async function revokePolicy(input: {
         : "The on-chain pause failed, so the policy was not revoked.",
     );
   }
-  withTransaction(() => {
-    getDb()
-      .prepare("UPDATE policies SET status = 'revoked', updated_at = ? WHERE id = ?")
-      .run(now(), policy.row.id);
-    audit({
+  await withTransaction(async () => {
+    await execute("UPDATE policies SET status = 'revoked', updated_at = ? WHERE id = ?", [
+      now(),
+      policy.row.id,
+    ]);
+    await audit({
       userId: input.userId,
       actor: "user",
       eventType: "policy.revoked",
       detail: { policyId: policy.row.id },
     });
   });
-  return policyView(loadPolicyById(policy.row.id)!);
+  const fresh = await loadPolicyById(policy.row.id);
+  if (!fresh) throw new Error("policy disappeared after revocation");
+  return policyView(fresh);
 }
 
 export function ruleForMerchant(
@@ -487,6 +492,7 @@ export function policyContractJson(policy: LoadedPolicy): ReturnType<typeof cont
   return contractPolicyJson(policy.row, policy.rules);
 }
 
-export function policyRowForUser(userId: string): PolicyRow | null {
-  return policyForUser(userId)?.row ?? null;
+export async function policyRowForUser(userId: string): Promise<PolicyRow | null> {
+  const policy = await policyForUser(userId);
+  return policy?.row ?? null;
 }

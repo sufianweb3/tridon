@@ -9,8 +9,8 @@ export const dynamic = "force-dynamic";
 
 export default async function AgentsPage() {
   const { user, session } = await requireUserPage();
-  const agents = listAgents(user.id);
-  const vault = vaultForUser(user.id);
+  const agents = await listAgents(user.id);
+  const vault = await vaultForUser(user.id);
 
   return (
     <div className="space-y-7">

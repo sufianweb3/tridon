@@ -14,6 +14,8 @@ import { requireUserPage } from "@/lib/server-auth";
 import { userOverview } from "@/lib/views";
 import { setting } from "@/lib/db";
 import { shortAccount, shortHash, timeAgo } from "@/lib/format";
+import { realtimeConfigured } from "@/lib/realtime";
+import { LivePayments } from "@/components/live-payments";
 import {
   Callout,
   EmptyState,
@@ -33,12 +35,21 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const { user, session } = await requireUserPage();
-  const overview = userOverview(user.id, user);
+  const overview = await userOverview(user.id, user);
   const policy = overview.policy;
   const vault = overview.vault;
   const budget = overview.budget;
   const pending = overview.approvals;
   const live = vault?.rail === "testnet";
+  const livePayments = overview.payments.map((payment) => ({
+    id: payment.id,
+    status: payment.status,
+    amount_gross: payment.gross,
+    created_at: String(payment.createdAt),
+    updated_at: String(payment.updatedAt),
+    merchant_name: payment.merchant?.name ?? payment.id,
+    agent_name: payment.agent?.name ?? null,
+  }));
 
   return (
     <div className="space-y-8">
@@ -322,51 +333,10 @@ export default async function DashboardPage() {
                 </Link>
               </div>
 
-              {overview.payments.length === 0 ? (
-                <EmptyState
-                  title="No payments yet."
-                  body="Use the agent console to send the first request through the policy."
-                  action={
-                    <Link href="/integrations" className="btn btn-primary !px-4 !py-2 !text-xs">
-                      Open agent console
-                    </Link>
-                  }
-                />
-              ) : (
-                <div className="overflow-hidden rounded-2xl border border-line bg-paper/50">
-                  <div className="hidden grid-cols-[1.3fr_0.9fr_0.7fr_0.7fr] gap-3 border-b border-line bg-paper-deep/60 px-4 py-2.5 font-mono text-[9px] uppercase tracking-[0.1em] text-muted md:grid">
-                    <span>Merchant / agent</span>
-                    <span>Status</span>
-                    <span className="text-right">Amount</span>
-                    <span className="text-right">When</span>
-                  </div>
-                  {overview.payments.map((payment) => (
-                    <Link
-                      key={payment.id}
-                      href={`/transactions/${payment.id}`}
-                      className="table-row grid gap-2 px-4 py-3 md:grid-cols-[1.3fr_0.9fr_0.7fr_0.7fr] md:items-center md:gap-3"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">
-                          {payment.merchant?.name ?? payment.id}
-                        </div>
-                        <div className="truncate font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
-                          {payment.agent?.name ?? "no agent"} · {payment.asset}
-                        </div>
-                      </div>
-                      <div>
-                        <StatusBadge status={payment.status} />
-                      </div>
-                      <div className="font-mono text-sm md:text-right">
-                        {payment.grossUsd}
-                      </div>
-                      <div className="font-mono text-[10px] text-muted md:text-right">
-                        {timeAgo(payment.createdAt)}
-                      </div>
-                    </Link>
-                  ))}
-                </div>
-              )}
+              <LivePayments
+                realtimeUrl={realtimeConfigured() ? process.env.NEON_REALTIME_URL ?? null : null}
+                initialData={livePayments}
+              />
             </section>
 
             <section className="space-y-3">
@@ -469,7 +439,7 @@ export default async function DashboardPage() {
             </div>
           </section>
 
-          {setting("demo.user_id", "") === user.id ? (
+          {(await setting("demo.user_id", "")) === user.id ? (
             <Callout tone="amber" title="This is the seeded demo workspace">
               The server holds this testnet workspace&apos;s signing keys so the demo can run
               without a browser wallet. The owner of the vault is still the user account, not

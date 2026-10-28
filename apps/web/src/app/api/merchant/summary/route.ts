@@ -13,7 +13,7 @@ export async function GET(): Promise<Response> {
     return ok({
       merchant: session.merchant,
       csrf: session.csrf,
-      dashboard: merchantDashboard(session.merchant.merchantId),
+      dashboard: await merchantDashboard(session.merchant.merchantId),
     });
   });
 }

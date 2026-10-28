@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { formatUsd } from "@agentspend/core";
 import { requireUserPage } from "@/lib/server-auth";
-import { paymentDetail } from "@/lib/payments";
+import { paymentDetail, receiptDownloadUrl } from "@/lib/payments";
 import { paymentView } from "@/lib/views";
 import { formatDateTime, shortAccount, shortHash, timeAgo } from "@/lib/format";
 import { ApprovalActions, ReconcileButton } from "@/components/actions";
@@ -43,10 +43,10 @@ export default async function TransactionDetailPage({
 }) {
   const { user, session } = await requireUserPage();
   const { id } = await params;
-  const detail = paymentDetail(id, user.id);
+  const detail = await paymentDetail(id, user.id);
   if (!detail) notFound();
 
-  const payment = paymentView(detail.payment);
+  const payment = await paymentView(detail.payment);
   const view = payment;
   const live = payment.rail === "testnet";
   const failed = ["denied", "failed", "expired", "revoked"].includes(payment.status);
@@ -61,6 +61,7 @@ export default async function TransactionDetailPage({
   );
   const stopMessage = payment.denyMessage ?? payment.error ?? "The payment did not settle.";
   const stopMentionsFee = /no fee|not charged|no platform fee/i.test(stopMessage);
+  const receiptUrl = settled ? await receiptDownloadUrl(payment.id, user.id) : null;
 
   return (
     <div className="space-y-7">
@@ -306,6 +307,21 @@ export default async function TransactionDetailPage({
                 <KeyValue label="Finality">{detail.settlement.finality}</KeyValue>
                 <KeyValue label="Receipt" mono>
                   {detail.settlement.receipt_id ? shortHash(detail.settlement.receipt_id) : "—"}
+                </KeyValue>
+                <KeyValue label="Receipt JSON">
+                  {receiptUrl ? (
+                    <a
+                      href={receiptUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 underline decoration-line-strong underline-offset-2 hover:decoration-ink"
+                    >
+                      Download from Neon Object Storage
+                      <ArrowUpRight className="h-3 w-3" aria-hidden />
+                    </a>
+                  ) : (
+                    "not stored"
+                  )}
                 </KeyValue>
                 <KeyValue label="Verified">
                   {detail.settlement.verified_at

@@ -19,7 +19,7 @@ import {
 } from "@agentspend/near";
 import { appConfig } from "./config";
 import { decryptSecret, encryptSecret, randomId } from "./crypto";
-import { getDb, now, setSetting, setting } from "./db";
+import { execute, now, query, queryOne, setSetting, setting } from "./db";
 import { MERCHANTS, ensureMerchants } from "./seed-data";
 import {
   contractMerchantSeeds,
@@ -141,12 +141,12 @@ function readWasm(path: string): Uint8Array {
   return new Uint8Array(fs.readFileSync(path));
 }
 
-function storeSecret(key: string, plaintext: string): void {
-  setSetting(key, JSON.stringify(encryptSecret(plaintext)));
+async function storeSecret(key: string, plaintext: string): Promise<void> {
+  await setSetting(key, JSON.stringify(encryptSecret(plaintext)));
 }
 
-function readSecret(key: string): string | null {
-  const stored = setting(key, "");
+async function readSecret(key: string): Promise<string | null> {
+  const stored = await setting(key, "");
   if (!stored) return null;
   try {
     return decryptSecret(JSON.parse(stored) as ReturnType<typeof encryptSecret>);
@@ -172,8 +172,8 @@ async function ensureSigningAccount(
   keyPrefix: string,
   accountPrefix: string,
 ): Promise<{ accountId: string; secretKey: string }> {
-  const existingAccount = setting(`${keyPrefix}.account`, "");
-  const existingSecret = readSecret(`${keyPrefix}.secret`);
+  const existingAccount = await setting(`${keyPrefix}.account`, "");
+  const existingSecret = await readSecret(`${keyPrefix}.secret`);
   if (existingAccount && existingSecret) {
     return { accountId: existingAccount, secretKey: existingSecret };
   }
@@ -181,19 +181,19 @@ async function ensureSigningAccount(
   const accountId = `${accountPrefix}-${suffix()}.testnet`;
   await createTestnetAccount(accountId, key.publicKey);
   await waitForAccount(accountId);
-  setSetting(`${keyPrefix}.account`, accountId);
-  storeSecret(`${keyPrefix}.secret`, key.secretKey);
+  await setSetting(`${keyPrefix}.account`, accountId);
+  await storeSecret(`${keyPrefix}.secret`, key.secretKey);
   return { accountId, secretKey: key.secretKey };
 }
 
 async function ensurePlainAccount(keyPrefix: string, accountPrefix: string): Promise<string> {
-  const existing = setting(`${keyPrefix}.account`, "");
+  const existing = await setting(`${keyPrefix}.account`, "");
   if (existing) return existing;
   const key = generateKey();
   const accountId = `${accountPrefix}-${suffix()}.testnet`;
   await createTestnetAccount(accountId, key.publicKey);
   await waitForAccount(accountId);
-  setSetting(`${keyPrefix}.account`, accountId);
+  await setSetting(`${keyPrefix}.account`, accountId);
   return accountId;
 }
 
@@ -213,40 +213,34 @@ export interface VaultRow {
   created_at: number;
 }
 
-export function vaultById(vaultId: string): VaultRow | null {
-  const row = getDb().prepare("SELECT * FROM vaults WHERE id = ?").get(vaultId) as
-    | VaultRow
-    | undefined;
-  return row ?? null;
+export async function vaultById(vaultId: string): Promise<VaultRow | null> {
+  return queryOne<VaultRow>("SELECT * FROM vaults WHERE id = ?", [vaultId]);
 }
 
-export function vaultForUser(userId: string): VaultRow | null {
-  const row = getDb()
-    .prepare("SELECT * FROM vaults WHERE user_id = ? ORDER BY created_at ASC LIMIT 1")
-    .get(userId) as VaultRow | undefined;
-  return row ?? null;
+export async function vaultForUser(userId: string): Promise<VaultRow | null> {
+  return queryOne<VaultRow>(
+    "SELECT * FROM vaults WHERE user_id = ? ORDER BY created_at ASC LIMIT 1",
+    [userId],
+  );
 }
 
-export function vaultForAgent(agentId: string): VaultRow | null {
-  const row = getDb()
-    .prepare(
-      `SELECT v.* FROM vaults v JOIN agents a ON a.vault_id = v.id WHERE a.id = ? LIMIT 1`,
-    )
-    .get(agentId) as VaultRow | undefined;
-  return row ?? null;
+export async function vaultForAgent(agentId: string): Promise<VaultRow | null> {
+  return queryOne<VaultRow>(
+    `SELECT v.* FROM vaults v JOIN agents a ON a.vault_id = v.id WHERE a.id = ? LIMIT 1`,
+    [agentId],
+  );
 }
 
-function upsertUser(id: string, wallet: string, displayName: string, role: string): void {
-  getDb()
-    .prepare(
-      `INSERT INTO users (id, wallet, display_name, role, created_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET wallet = excluded.wallet, display_name = excluded.display_name, role = excluded.role`,
-    )
-    .run(id, wallet, displayName, role, now());
+async function upsertUser(id: string, wallet: string, displayName: string, role: string): Promise<void> {
+  await execute(
+    `INSERT INTO users (id, wallet, display_name, role, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET wallet = excluded.wallet, display_name = excluded.display_name, role = excluded.role`,
+    [id, wallet, displayName, role, now()],
+  );
 }
 
-function insertVault(input: {
+async function insertVault(input: {
   id: string;
   userId: string;
   rail: "testnet" | "mock";
@@ -254,17 +248,15 @@ function insertVault(input: {
   tokenAccount: string;
   feeAccount: string;
   balance: string;
-}): void {
-  getDb()
-    .prepare(
-      `INSERT INTO vaults (id, user_id, network, rail, account_id, token_account, token_symbol,
-        token_decimals, fee_account, balance, chain_status, created_at)
-       VALUES (?, ?, 'testnet', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         rail = excluded.rail, account_id = excluded.account_id, token_account = excluded.token_account,
-         fee_account = excluded.fee_account`,
-    )
-    .run(
+}): Promise<void> {
+  await execute(
+    `INSERT INTO vaults (id, user_id, network, rail, account_id, token_account, token_symbol,
+      token_decimals, fee_account, balance, chain_status, created_at)
+     VALUES (?, ?, 'testnet', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       rail = excluded.rail, account_id = excluded.account_id, token_account = excluded.token_account,
+       fee_account = excluded.fee_account`,
+    [
       input.id,
       input.userId,
       input.rail,
@@ -276,34 +268,33 @@ function insertVault(input: {
       input.balance,
       input.rail === "mock" ? "mock" : "ready",
       now(),
-    );
+    ],
+  );
 }
 
-export function insertPolicyWithRules(input: {
+export async function insertPolicyWithRules(input: {
   id: string;
   userId: string;
   vaultId: string;
   spec: PolicySpec;
   validFrom?: number;
   expiresAt?: number;
-}): void {
+}): Promise<void> {
   const timestamp = now();
   const validFrom = input.validFrom ?? timestamp - 60_000;
   const expiresAt = input.expiresAt ?? timestamp + 90 * DAY_MS;
-  getDb()
-    .prepare(
-      `INSERT INTO policies (id, user_id, agent_id, vault_id, name, status, total_budget,
-        per_tx_limit, daily_limit, weekly_limit, monthly_limit, unknown_merchant_mode,
-        unknown_merchant_cap, approval_mode, valid_from, expires_at, version, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name, total_budget = excluded.total_budget, per_tx_limit = excluded.per_tx_limit,
-         daily_limit = excluded.daily_limit, weekly_limit = excluded.weekly_limit,
-         monthly_limit = excluded.monthly_limit, unknown_merchant_mode = excluded.unknown_merchant_mode,
-         unknown_merchant_cap = excluded.unknown_merchant_cap, approval_mode = excluded.approval_mode,
-         valid_from = excluded.valid_from, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
-    )
-    .run(
+  await execute(
+    `INSERT INTO policies (id, user_id, agent_id, vault_id, name, status, total_budget,
+      per_tx_limit, daily_limit, weekly_limit, monthly_limit, unknown_merchant_mode,
+      unknown_merchant_cap, approval_mode, valid_from, expires_at, version, created_at, updated_at)
+     VALUES (?, ?, NULL, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, total_budget = excluded.total_budget, per_tx_limit = excluded.per_tx_limit,
+       daily_limit = excluded.daily_limit, weekly_limit = excluded.weekly_limit,
+       monthly_limit = excluded.monthly_limit, unknown_merchant_mode = excluded.unknown_merchant_mode,
+       unknown_merchant_cap = excluded.unknown_merchant_cap, approval_mode = excluded.approval_mode,
+       valid_from = excluded.valid_from, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
+    [
       input.id,
       input.userId,
       input.vaultId,
@@ -320,25 +311,25 @@ export function insertPolicyWithRules(input: {
       expiresAt,
       timestamp,
       timestamp,
-    );
+    ],
+  );
 
   for (const rule of input.spec.rules) {
-    const merchant = getDb()
-      .prepare("SELECT payout_account FROM merchants WHERE id = ?")
-      .get(rule.merchantId) as { payout_account: string } | undefined;
+    const merchant = await queryOne<{ payout_account: string }>(
+      "SELECT payout_account FROM merchants WHERE id = ?",
+      [rule.merchantId],
+    );
     if (!merchant) continue;
-    getDb()
-      .prepare(
-        `INSERT INTO policy_merchant_rules (id, policy_id, merchant_id, payout_account,
-          per_tx_limit, window_limit, window_secs, allowlisted, requires_approval, active, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(policy_id, merchant_id) DO UPDATE SET
-           payout_account = excluded.payout_account, per_tx_limit = excluded.per_tx_limit,
-           window_limit = excluded.window_limit, window_secs = excluded.window_secs,
-           allowlisted = excluded.allowlisted, requires_approval = excluded.requires_approval,
-           active = 1`,
-      )
-      .run(
+    await execute(
+      `INSERT INTO policy_merchant_rules (id, policy_id, merchant_id, payout_account,
+        per_tx_limit, window_limit, window_secs, allowlisted, requires_approval, active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+       ON CONFLICT(policy_id, merchant_id) DO UPDATE SET
+         payout_account = excluded.payout_account, per_tx_limit = excluded.per_tx_limit,
+         window_limit = excluded.window_limit, window_secs = excluded.window_secs,
+         allowlisted = excluded.allowlisted, requires_approval = excluded.requires_approval,
+         active = 1`,
+      [
         `rule_${input.id}_${rule.merchantId}`,
         input.id,
         rule.merchantId,
@@ -349,11 +340,12 @@ export function insertPolicyWithRules(input: {
         rule.allowlisted ? 1 : 0,
         rule.requiresApproval ? 1 : 0,
         timestamp,
-      );
+      ],
+    );
   }
 }
 
-function insertAgent(input: {
+async function insertAgent(input: {
   id: string;
   userId: string;
   vaultId: string;
@@ -361,15 +353,13 @@ function insertAgent(input: {
   description: string;
   publicKey?: string | null;
   encryptedKey?: { ciphertext: string; iv: string; tag: string } | null;
-}): void {
-  getDb()
-    .prepare(
-      `INSERT INTO agents (id, user_id, vault_id, name, description, status, public_key,
-        key_ciphertext, key_iv, key_tag, allowance_yocto, created_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description`,
-    )
-    .run(
+}): Promise<void> {
+  await execute(
+    `INSERT INTO agents (id, user_id, vault_id, name, description, status, public_key,
+      key_ciphertext, key_iv, key_tag, allowance_yocto, created_at)
+     VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description`,
+    [
       input.id,
       input.userId,
       input.vaultId,
@@ -381,14 +371,13 @@ function insertAgent(input: {
       input.encryptedKey?.tag ?? null,
       "500000000000000000000000",
       now(),
-    );
+    ],
+  );
 }
 
-function updateMerchantPayouts(payouts: Record<string, string>): void {
+async function updateMerchantPayouts(payouts: Record<string, string>): Promise<void> {
   for (const [merchantId, accountId] of Object.entries(payouts)) {
-    getDb()
-      .prepare("UPDATE merchants SET payout_account = ? WHERE id = ?")
-      .run(accountId, merchantId);
+    await execute("UPDATE merchants SET payout_account = ? WHERE id = ?", [accountId, merchantId]);
   }
 }
 
@@ -408,20 +397,22 @@ export interface DemoWorkspace {
  * users are provisioned on the mock rail instead.
  */
 export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
-  const existingVaultId = setting("demo.vault_id", "");
-  const existingUserId = setting("demo.user_id", "");
-  const allAgentsAdded = DEMO_AGENTS.every(
-    (agent) => setting(`demo.agent.${agent.id}.added`, "") === "1",
-  );
+  const existingVaultId = await setting("demo.vault_id", "");
+  const existingUserId = await setting("demo.user_id", "");
+  const allAgentsAdded = (
+    await Promise.all(
+      DEMO_AGENTS.map(async (agent) => (await setting(`demo.agent.${agent.id}.added`, "")) === "1"),
+    )
+  ).every(Boolean);
   if (
     existingVaultId &&
     existingUserId &&
-    setting("demo.vault.initialized", "") === "1" &&
-    setting("demo.minted", "") === "1" &&
-    setting("demo.vault.temp_deleted", "") === "1" &&
+    (await setting("demo.vault.initialized", "")) === "1" &&
+    (await setting("demo.minted", "")) === "1" &&
+    (await setting("demo.vault.temp_deleted", "")) === "1" &&
     allAgentsAdded
   ) {
-    const vault = vaultById(existingVaultId);
+    const vault = await vaultById(existingVaultId);
     if (vault) {
       await ensureDemoAgents(vault);
       return {
@@ -429,13 +420,13 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
         vaultId: existingVaultId,
         vaultAccount: vault.account_id,
         tokenAccount: vault.token_account,
-        ownerAccount: setting("demo.owner.account", ""),
+        ownerAccount: await setting("demo.owner.account", ""),
         resumed: true,
       };
     }
   }
 
-  ensureMerchants();
+  await ensureMerchants();
 
   const owner = await ensureSigningAccount("demo.owner", "as-owner");
   const issuer = await ensureSigningAccount("demo.token", "as-testusd");
@@ -448,10 +439,10 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
       `as-pay-${merchant.slug}`,
     );
   }
-  updateMerchantPayouts(payouts);
+  await updateMerchantPayouts(payouts);
 
   // Token contract -----------------------------------------------------------
-  if (setting("demo.token.deployed", "") !== "1") {
+  if ((await setting("demo.token.deployed", "")) !== "1") {
     const wasm = readWasm(wasmPaths.token);
     const deploy = await deployContract({
       accountId: issuer.accountId,
@@ -476,22 +467,22 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
       gas: 60_000_000_000_000n,
     });
     if (!init.success) throw new Error(`Token init failed: ${init.error ?? init.finalExecutionStatus}`);
-    setSetting("demo.token.deployed", "1");
+    await setSetting("demo.token.deployed", "1");
   }
 
   // Vault account + contract -------------------------------------------------
-  let vaultAccount = setting("demo.vault.account", "");
+  let vaultAccount = await setting("demo.vault.account", "");
   if (!vaultAccount) {
     const temp = generateKey();
     vaultAccount = `as-vault-${suffix()}.testnet`;
     await createTestnetAccount(vaultAccount, temp.publicKey);
     await waitForAccount(vaultAccount);
-    setSetting("demo.vault.account", vaultAccount);
-    storeSecret("demo.vault.temp_secret", temp.secretKey);
+    await setSetting("demo.vault.account", vaultAccount);
+    await storeSecret("demo.vault.temp_secret", temp.secretKey);
   }
 
-  if (setting("demo.vault.deployed", "") !== "1") {
-    const tempSecret = readSecret("demo.vault.temp_secret");
+  if ((await setting("demo.vault.deployed", "")) !== "1") {
+    const tempSecret = await readSecret("demo.vault.temp_secret");
     if (!tempSecret) throw new Error("Missing temporary vault deploy key");
     const deploy = await deployContract({
       accountId: vaultAccount,
@@ -501,11 +492,11 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     if (!deploy.success) {
       throw new Error(`Vault deploy failed: ${deploy.error ?? deploy.finalExecutionStatus}`);
     }
-    setSetting("demo.vault.deployed", "1");
+    await setSetting("demo.vault.deployed", "1");
   }
 
-  if (setting("demo.vault.owner_key", "") !== "1") {
-    const tempSecret = readSecret("demo.vault.temp_secret");
+  if ((await setting("demo.vault.owner_key", "")) !== "1") {
+    const tempSecret = await readSecret("demo.vault.temp_secret");
     if (!tempSecret) throw new Error("Missing temporary vault deploy key");
     const add = await addFullAccessKey({
       accountId: vaultAccount,
@@ -513,13 +504,13 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
       publicKey: publicKeyOf(owner.secretKey),
     });
     if (!add.success) throw new Error(`Adding owner key failed: ${add.error ?? add.finalExecutionStatus}`);
-    setSetting("demo.vault.owner_key", "1");
+    await setSetting("demo.vault.owner_key", "1");
   }
 
   // DB rows needed before contract init (policy JSON is read back from them).
-  upsertUser(DEMO_USER_ID, owner.accountId, "Demo workspace", "demo");
+  await upsertUser(DEMO_USER_ID, owner.accountId, "Demo workspace", "demo");
   const vaultId = DEMO_VAULT_ID;
-  insertVault({
+  await insertVault({
     id: vaultId,
     userId: DEMO_USER_ID,
     rail: "testnet",
@@ -528,12 +519,12 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     feeAccount,
     balance: "0",
   });
-  setSetting("demo.user_id", DEMO_USER_ID);
-  setSetting("demo.vault_id", vaultId);
+  await setSetting("demo.user_id", DEMO_USER_ID);
+  await setSetting("demo.vault_id", vaultId);
 
-  const policy = loadPolicyById(DEMO_POLICY_ID);
+  const policy = await loadPolicyById(DEMO_POLICY_ID);
   if (!policy) {
-    insertPolicyWithRules({
+    await insertPolicyWithRules({
       id: DEMO_POLICY_ID,
       userId: DEMO_USER_ID,
       vaultId,
@@ -541,8 +532,8 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     });
   }
 
-  if (setting("demo.vault.initialized", "") !== "1") {
-    const loaded = loadPolicyById(DEMO_POLICY_ID);
+  if ((await setting("demo.vault.initialized", "")) !== "1") {
+    const loaded = await loadPolicyById(DEMO_POLICY_ID);
     if (!loaded) throw new Error("Demo policy row missing");
     const init = await callMethod({
       accountId: owner.accountId,
@@ -564,15 +555,13 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     if (!init.success) {
       throw new Error(`Vault init failed: ${init.error ?? init.finalExecutionStatus}`);
     }
-    setSetting("demo.vault.initialized", "1");
-    setSetting("demo.vault.init_tx", init.txHash);
-    getDb()
-      .prepare("UPDATE vaults SET deploy_tx = ? WHERE id = ?")
-      .run(init.txHash, vaultId);
+    await setSetting("demo.vault.initialized", "1");
+    await setSetting("demo.vault.init_tx", init.txHash);
+    await execute("UPDATE vaults SET deploy_tx = ? WHERE id = ?", [init.txHash, vaultId]);
   }
 
-  if (setting("demo.vault.temp_deleted", "") !== "1") {
-    const tempSecret = readSecret("demo.vault.temp_secret");
+  if ((await setting("demo.vault.temp_deleted", "")) !== "1") {
+    const tempSecret = await readSecret("demo.vault.temp_secret");
     if (tempSecret) {
       const tempPublic = publicKeyOf(tempSecret);
       const deleted = await deleteKey({
@@ -584,12 +573,13 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
         throw new Error(`Deleting temporary vault key failed: ${deleted.error ?? deleted.finalExecutionStatus}`);
       }
     }
-    setSetting("demo.vault.temp_deleted", "1");
-    setSetting("demo.vault.temp_secret", "");
+    await setSetting("demo.vault.temp_deleted", "1");
+    await setSetting("demo.vault.temp_secret", "");
   }
 
   // Token storage registration + funding ------------------------------------
-  if (setting("demo.registered.vault", "") !== "1") {    const registered = await storageDeposit({
+  if ((await setting("demo.registered.vault", "")) !== "1") {
+    const registered = await storageDeposit({
       tokenAccount: issuer.accountId,
       signerAccount: issuer.accountId,
       secretKey: issuer.secretKey,
@@ -598,7 +588,7 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     if (!registered.success) {
       throw new Error(`Vault token registration failed: ${registered.error ?? registered.finalExecutionStatus}`);
     }
-    setSetting("demo.registered.vault", "1");
+    await setSetting("demo.registered.vault", "1");
   }
 
   for (const merchant of MERCHANTS) {
@@ -606,7 +596,7 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     // fail at the token contract so the failure path is real, not simulated.
     if (merchant.id === "merchant-fail") continue;
     const key = `demo.registered.${merchant.id}`;
-    if (setting(key, "") === "1") continue;
+    if ((await setting(key, "")) === "1") continue;
     const registered = await storageDeposit({
       tokenAccount: issuer.accountId,
       signerAccount: issuer.accountId,
@@ -618,10 +608,10 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
         `Merchant ${merchant.id} token registration failed: ${registered.error ?? registered.finalExecutionStatus}`,
       );
     }
-    setSetting(key, "1");
+    await setSetting(key, "1");
   }
 
-  if (setting("demo.registered.fee", "") !== "1") {
+  if ((await setting("demo.registered.fee", "")) !== "1") {
     const registered = await storageDeposit({
       tokenAccount: issuer.accountId,
       signerAccount: issuer.accountId,
@@ -631,10 +621,10 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     if (!registered.success) {
       throw new Error(`Fee account token registration failed: ${registered.error ?? registered.finalExecutionStatus}`);
     }
-    setSetting("demo.registered.fee", "1");
+    await setSetting("demo.registered.fee", "1");
   }
 
-  if (setting("demo.registered.issuer", "") !== "1") {
+  if ((await setting("demo.registered.issuer", "")) !== "1") {
     const registered = await storageDeposit({
       tokenAccount: issuer.accountId,
       signerAccount: issuer.accountId,
@@ -646,10 +636,10 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
         `Issuer token registration failed: ${registered.error ?? registered.finalExecutionStatus}`,
       );
     }
-    setSetting("demo.registered.issuer", "1");
+    await setSetting("demo.registered.issuer", "1");
   }
 
-  if (setting("demo.minted", "") !== "1") {
+  if ((await setting("demo.minted", "")) !== "1") {
     const mint = await mintTestToken({
       tokenAccount: issuer.accountId,
       issuerAccount: issuer.accountId,
@@ -658,13 +648,13 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
       amount: 500_000_000n,
     });
     if (!mint.success) throw new Error(`Mint failed: ${mint.error ?? mint.finalExecutionStatus}`);
-    setSetting("demo.minted", "1");
+    await setSetting("demo.minted", "1");
   }
 
   // A direct mint credits the token balance but does not run the vault's
   // ft_on_transfer hook, so the vault would hold tokens it has not accounted
   // for. Fund it with ft_transfer_call and msg = "deposit" instead.
-  if (setting("demo.funded.vault", "") !== "1") {
+  if ((await setting("demo.funded.vault", "")) !== "1") {
     const funded = await ftTransferCall({
       tokenAccount: issuer.accountId,
       signerAccount: issuer.accountId,
@@ -676,10 +666,10 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
     if (!funded.success) {
       throw new Error(`Vault funding failed: ${funded.error ?? funded.finalExecutionStatus}`);
     }
-    setSetting("demo.funded.vault", "1");
+    await setSetting("demo.funded.vault", "1");
   }
 
-  const vault = vaultById(vaultId);
+  const vault = await vaultById(vaultId);
   if (!vault) throw new Error("Demo vault row missing");
   await ensureDemoAgents(vault);
 
@@ -695,19 +685,15 @@ export async function ensureDemoWorkspace(): Promise<DemoWorkspace> {
 
 async function ensureDemoAgents(vault: VaultRow): Promise<void> {
   for (const definition of DEMO_AGENTS) {
-    let row = getDb()
-      .prepare("SELECT * FROM agents WHERE id = ?")
-      .get(definition.id) as
-      | {
-          id: string;
-          public_key: string | null;
-          key_ciphertext: string | null;
-        }
-      | undefined;
+    let row = await queryOne<{
+      id: string;
+      public_key: string | null;
+      key_ciphertext: string | null;
+    }>("SELECT * FROM agents WHERE id = ?", [definition.id]);
 
     if (!row) {
       const key = generateKey();
-      insertAgent({
+      await insertAgent({
         id: definition.id,
         userId: DEMO_USER_ID,
         vaultId: vault.id,
@@ -716,19 +702,17 @@ async function ensureDemoAgents(vault: VaultRow): Promise<void> {
         publicKey: key.publicKey,
         encryptedKey: encryptSecret(key.secretKey),
       });
-      storeSecret(`demo.agent.${definition.id}.secret`, key.secretKey);
-      row = getDb()
-        .prepare("SELECT * FROM agents WHERE id = ?")
-        .get(definition.id) as typeof row;
+      await storeSecret(`demo.agent.${definition.id}.secret`, key.secretKey);
+      row = await queryOne<typeof row>("SELECT * FROM agents WHERE id = ?", [definition.id]);
     }
 
     const flag = `demo.agent.${definition.id}.added`;
-    if (setting(flag, "") === "1") continue;
+    if ((await setting(flag, "")) === "1") continue;
     const publicKey = row?.public_key;
     if (!publicKey) throw new Error(`Agent ${definition.id} has no public key`);
 
-    const ownerAccount = setting("demo.owner.account", "");
-    const ownerSecret = readSecret("demo.owner.secret");
+    const ownerAccount = await setting("demo.owner.account", "");
+    const ownerSecret = await readSecret("demo.owner.secret");
     if (!ownerAccount || !ownerSecret) throw new Error("Missing demo owner key");
 
     const result = await ownerCall({
@@ -743,26 +727,25 @@ async function ensureDemoAgents(vault: VaultRow): Promise<void> {
         `Adding agent ${definition.id} failed: ${result.error ?? result.finalExecutionStatus}`,
       );
     }
-    setSetting(flag, "1");
+    await setSetting(flag, "1");
   }
 }
 
-/** Read the vault's accounted balance from the chain and mirror it into SQLite. */
+/** Read the vault's accounted balance from the chain and mirror it into Postgres. */
 export async function syncVaultBalance(vaultId: string): Promise<bigint> {
-  const vault = vaultById(vaultId);
+  const vault = await vaultById(vaultId);
   if (!vault) return 0n;
   if (vault.rail !== "testnet") return BigInt(vault.balance);
   try {
     const state = await getVaultState(vault.account_id);
     const balance = BigInt(state.balance.accounted_balance);
-    getDb()
-      .prepare("UPDATE vaults SET balance = ?, chain_status = 'ready' WHERE id = ?")
-      .run(balance.toString(), vaultId);
+    await execute("UPDATE vaults SET balance = ?, chain_status = 'ready' WHERE id = ?", [
+      balance.toString(),
+      vaultId,
+    ]);
     return balance;
   } catch (error) {
-    getDb()
-      .prepare("UPDATE vaults SET chain_status = 'unreachable' WHERE id = ?")
-      .run(vaultId);
+    await execute("UPDATE vaults SET chain_status = 'unreachable' WHERE id = ?", [vaultId]);
     console.warn(`[vault] balance sync failed for ${vaultId}:`, (error as Error).message);
     return BigInt(vault.balance);
   }
@@ -781,20 +764,22 @@ export async function syncPolicyToVault(input: {
   policyId: string;
   removedMerchantIds?: string[];
 }): Promise<{ txHash: string | null; version: number }> {
-  const policy = loadPolicyById(input.policyId);
+  const policy = await loadPolicyById(input.policyId);
   if (!policy) throw new Error("policy not found");
-  const vault = policy.row.vault_id ? vaultById(policy.row.vault_id) : null;
+  const vault = policy.row.vault_id ? await vaultById(policy.row.vault_id) : null;
   if (!vault) throw new Error("vault not found");
   if (vault.rail !== "testnet") {
     const version = policy.row.version + 1;
-    getDb()
-      .prepare("UPDATE policies SET version = ?, updated_at = ? WHERE id = ?")
-      .run(version, now(), policy.row.id);
+    await execute("UPDATE policies SET version = ?, updated_at = ? WHERE id = ?", [
+      version,
+      now(),
+      policy.row.id,
+    ]);
     return { txHash: null, version };
   }
 
-  const ownerAccount = setting("demo.owner.account", "");
-  const ownerSecret = readSecret("demo.owner.secret");
+  const ownerAccount = await setting("demo.owner.account", "");
+  const ownerSecret = await readSecret("demo.owner.secret");
   if (!ownerAccount || !ownerSecret) {
     throw new Error("This vault is not controlled by the demo signer.");
   }
@@ -849,20 +834,22 @@ export async function syncPolicyToVault(input: {
 
   const onChain = await getVaultState(vault.account_id);
   const version = onChain.policy.version;
-  getDb()
-    .prepare("UPDATE policies SET version = ?, updated_at = ? WHERE id = ?")
-    .run(version, now(), policy.row.id);
+  await execute("UPDATE policies SET version = ?, updated_at = ? WHERE id = ?", [
+    version,
+    now(),
+    policy.row.id,
+  ]);
   return { txHash: setResult.txHash, version };
 }
 
 export async function pauseVaultPolicy(policyId: string, paused: boolean): Promise<void> {
-  const policy = loadPolicyById(policyId);
+  const policy = await loadPolicyById(policyId);
   if (!policy) throw new Error("policy not found");
-  const vault = policy.row.vault_id ? vaultById(policy.row.vault_id) : null;
+  const vault = policy.row.vault_id ? await vaultById(policy.row.vault_id) : null;
   if (!vault) throw new Error("vault not found");
   if (vault.rail !== "testnet") return;
-  const ownerAccount = setting("demo.owner.account", "");
-  const ownerSecret = readSecret("demo.owner.secret");
+  const ownerAccount = await setting("demo.owner.account", "");
+  const ownerSecret = await readSecret("demo.owner.secret");
   if (!ownerAccount || !ownerSecret) throw new Error("Demo owner key missing");
   const result = await ownerCall({
     vaultAccount: vault.account_id,
@@ -883,12 +870,12 @@ export async function approveOnVault(input: {
   requestExpiry: number;
   approvalExpiry: number;
 }): Promise<string | null> {
-  const policy = loadPolicyById(input.policyId);
+  const policy = await loadPolicyById(input.policyId);
   if (!policy) throw new Error("policy not found");
-  const vault = policy.row.vault_id ? vaultById(policy.row.vault_id) : null;
+  const vault = policy.row.vault_id ? await vaultById(policy.row.vault_id) : null;
   if (!vault || vault.rail !== "testnet") return null;
-  const ownerAccount = setting("demo.owner.account", "");
-  const ownerSecret = readSecret("demo.owner.secret");
+  const ownerAccount = await setting("demo.owner.account", "");
+  const ownerSecret = await readSecret("demo.owner.secret");
   if (!ownerAccount || !ownerSecret) throw new Error("Demo owner key missing");
   const result = await ownerCall({
     vaultAccount: vault.account_id,
@@ -916,8 +903,8 @@ export async function addAgentKeyToVault(input: {
   publicKey: string;
 }): Promise<void> {
   if (input.vault.rail !== "testnet") return;
-  const ownerAccount = setting("demo.owner.account", "");
-  const ownerSecret = readSecret("demo.owner.secret");
+  const ownerAccount = await setting("demo.owner.account", "");
+  const ownerSecret = await readSecret("demo.owner.secret");
   if (!ownerAccount || !ownerSecret) {
     throw new Error(
       "This vault is not controlled by the demo signer, so a new on-chain agent key cannot be added.",
@@ -936,15 +923,19 @@ export async function addAgentKeyToVault(input: {
 }
 
 export async function revokeAgentOnVault(agentId: string): Promise<void> {
-  const agent = getDb()
-    .prepare("SELECT a.*, v.account_id AS vault_account, v.rail FROM agents a JOIN vaults v ON v.id = a.vault_id WHERE a.id = ?")
-    .get(agentId) as
-    | { id: string; vault_account: string; rail: string; status: string }
-    | undefined;
+  const agent = await queryOne<{
+    id: string;
+    vault_account: string;
+    rail: string;
+    status: string;
+  }>(
+    "SELECT a.*, v.account_id AS vault_account, v.rail FROM agents a JOIN vaults v ON v.id = a.vault_id WHERE a.id = ?",
+    [agentId],
+  );
   if (!agent) throw new Error("agent not found");
   if (agent.rail !== "testnet") return;
-  const ownerAccount = setting("demo.owner.account", "");
-  const ownerSecret = readSecret("demo.owner.secret");
+  const ownerAccount = await setting("demo.owner.account", "");
+  const ownerSecret = await readSecret("demo.owner.secret");
   if (!ownerAccount || !ownerSecret) throw new Error("Demo owner key missing");
   const result = await ownerCall({
     vaultAccount: agent.vault_account,
@@ -959,13 +950,13 @@ export async function revokeAgentOnVault(agentId: string): Promise<void> {
 }
 
 /** Wallet users get a clearly labelled mock vault. No keys, no chain. */
-export function ensureMockWorkspace(userId: string, wallet: string): VaultRow {
-  const existing = vaultForUser(userId);
+export async function ensureMockWorkspace(userId: string, wallet: string): Promise<VaultRow> {
+  const existing = await vaultForUser(userId);
   if (existing) return existing;
-  ensureMerchants();
+  await ensureMerchants();
   const token = randomId("vlt_");
   const vaultId = `vlt_mock_${token.slice(4)}`;
-  insertVault({
+  await insertVault({
     id: vaultId,
     userId,
     rail: "mock",
@@ -974,20 +965,22 @@ export function ensureMockWorkspace(userId: string, wallet: string): VaultRow {
     feeAccount: `mock:fees:${token}`,
     balance: "500000000",
   });
-  insertPolicyWithRules({
+  await insertPolicyWithRules({
     id: `pol_${token.slice(4)}`,
     userId,
     vaultId,
     spec: DEFAULT_POLICY_SPEC,
   });
-  insertAgent({
+  await insertAgent({
     id: `agent_${token.slice(4)}`,
     userId,
     vaultId,
     name: "First agent",
     description: `Created for ${wallet} on the mock rail. Add a real agent key to call the agent API.`,
   });
-  return vaultById(vaultId)!;
+  const vault = await vaultById(vaultId);
+  if (!vault) throw new Error("mock vault creation failed");
+  return vault;
 }
 
 export function testnetStatus(): { network: string; rpc: string; token: string; label: string } {
@@ -999,7 +992,7 @@ export function testnetStatus(): { network: string; rpc: string; token: string; 
   };
 }
 
-export function demoOwnerSecret(): string | null {
+export async function demoOwnerSecret(): Promise<string | null> {
   return readSecret("demo.owner.secret");
 }
 

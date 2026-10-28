@@ -3,7 +3,7 @@ import { Clock3, Fingerprint, ShieldCheck } from "lucide-react";
 import { formatUsd } from "@agentspend/core";
 import { requireUserPage } from "@/lib/server-auth";
 import { pendingApprovals } from "@/lib/payments";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 import { formatDateTime, shortHash, timeAgo } from "@/lib/format";
 import { ApprovalActions } from "@/components/actions";
 import {
@@ -31,20 +31,19 @@ interface ApprovalHistoryRow {
 
 export default async function ApprovalsPage() {
   const { user, session } = await requireUserPage();
-  const pending = pendingApprovals(user.id);
-  const history = getDb()
-    .prepare(
-      `SELECT a.id, a.payment_id, a.status, a.expires_at, a.decided_at, a.created_at,
-              m.name AS merchant_name, pr.amount_gross, ag.name AS agent_name
-       FROM approvals a
-       JOIN payment_requests pr ON pr.id = a.payment_id
-       JOIN merchants m ON m.id = pr.merchant_id
-       LEFT JOIN agents ag ON ag.id = pr.agent_id
-       WHERE pr.user_id = ? AND a.status != 'pending'
-       ORDER BY a.created_at DESC
-       LIMIT 20`,
-    )
-    .all(user.id) as unknown as ApprovalHistoryRow[];
+  const pending = await pendingApprovals(user.id);
+  const history = await query<ApprovalHistoryRow>(
+    `SELECT a.id, a.payment_id, a.status, a.expires_at, a.decided_at, a.created_at,
+            m.name AS merchant_name, pr.amount_gross, ag.name AS agent_name
+     FROM approvals a
+     JOIN payment_requests pr ON pr.id = a.payment_id
+     JOIN merchants m ON m.id = pr.merchant_id
+     LEFT JOIN agents ag ON ag.id = pr.agent_id
+     WHERE pr.user_id = ? AND a.status != 'pending'
+     ORDER BY a.created_at DESC
+     LIMIT 20`,
+    [user.id],
+  );
 
   return (
     <div className="space-y-7">

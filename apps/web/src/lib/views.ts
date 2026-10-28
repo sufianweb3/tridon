@@ -1,7 +1,7 @@
 import { formatUsd } from "@agentspend/core";
 import type { PaymentRow } from "./payments";
 import { getAgent, getMerchant, getApprovalForPayment } from "./payments";
-import { getDb, now, setting } from "./db";
+import { now, queryOne, setting } from "./db";
 import { appConfig, explorerAccount, explorerTx } from "./config";
 import { listAgentRows, agentView, type AgentView } from "./agents";
 import { policyForUser, policyView, type PolicyView } from "./policies";
@@ -50,10 +50,10 @@ export interface PaymentView {
   approval: { id: string; status: string; expiresAt: number } | null;
 }
 
-export function paymentView(payment: PaymentRow): PaymentView {
-  const merchant = getMerchant(payment.merchant_id);
-  const agent = payment.agent_id ? getAgent(payment.agent_id) : null;
-  const approval = getApprovalForPayment(payment.id);
+export async function paymentView(payment: PaymentRow): Promise<PaymentView> {
+  const merchant = await getMerchant(payment.merchant_id);
+  const agent = payment.agent_id ? await getAgent(payment.agent_id) : null;
+  const approval = await getApprovalForPayment(payment.id);
   const live = payment.rail === "testnet";
   const feeState: PaymentView["feeState"] =
     payment.status !== "succeeded"
@@ -151,7 +151,7 @@ export interface Overview {
     monthGrossUsd: string;
   } | null;
   agents: AgentView[];
-  approvals: ReturnType<typeof pendingApprovals>;
+  approvals: Awaited<ReturnType<typeof pendingApprovals>>;
   payments: PaymentView[];
   audit: Array<{
     id: string;
@@ -163,26 +163,32 @@ export interface Overview {
   }>;
 }
 
-export function userOverview(userId: string, user: {
-  id: string;
-  wallet: string;
-  displayName: string;
-  role: string;
-}): Overview {
-  const vault = vaultForUser(userId);
-  const policy = policyForUser(userId);
+export async function userOverview(
+  userId: string,
+  user: {
+    id: string;
+    wallet: string;
+    displayName: string;
+    role: string;
+  },
+): Promise<Overview> {
+  const vault = await vaultForUser(userId);
+  const policy = await policyForUser(userId);
   const budget =
     policy === null
       ? null
-      : budgetSummary({
+      : await budgetSummary({
           policyId: policy.row.id,
           totalBudget: BigInt(policy.row.total_budget),
           now: now(),
         });
-  const payments = listPayments({ userId, limit: 12 }).map(paymentView);
-  const approvals = pendingApprovals(userId);
-  const agents = listAgentRows(userId).map(agentView);
-  const audit = listAudit(24, userId).map((event) => ({
+  const paymentRows = await listPayments({ userId, limit: 12 });
+  const payments = await Promise.all(paymentRows.map(paymentView));
+  const approvals = await pendingApprovals(userId);
+  const agentRows = await listAgentRows(userId);
+  const agents = await Promise.all(agentRows.map(agentView));
+  const auditRows = await listAudit(24, userId);
+  const audit = auditRows.map((event) => ({
     id: event.id,
     actor: event.actor,
     eventType: event.event_type,
@@ -192,7 +198,7 @@ export function userOverview(userId: string, user: {
   }));
   return {
     now: now(),
-    demo: setting("demo.user_id", "") === userId,
+    demo: (await setting("demo.user_id", "")) === userId,
     token: {
       symbol: appConfig.token.symbol,
       label: appConfig.token.label,
@@ -222,7 +228,7 @@ export function userOverview(userId: string, user: {
           explorerUrl: vault.rail === "testnet" ? explorerAccount(vault.account_id) : "",
         }
       : null,
-    policy: policy ? policyView(policy) : null,
+    policy: policy ? await policyView(policy) : null,
     budget: budget
       ? {
           totalBudget: budget.totalBudget.toString(),
@@ -261,13 +267,12 @@ function safeJson(value: string): Record<string, unknown> {
   }
 }
 
-export function countPendingApprovals(userId: string): number {
-  const row = getDb()
-    .prepare(
-      `SELECT COUNT(*) AS count FROM approvals a
-       JOIN payment_requests p ON p.id = a.payment_id
-       WHERE p.user_id = ? AND a.status = 'pending'`,
-    )
-    .get(userId) as { count: number };
-  return row.count;
+export async function countPendingApprovals(userId: string): Promise<number> {
+  const row = await queryOne<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM approvals a
+     JOIN payment_requests p ON p.id = a.payment_id
+     WHERE p.user_id = ? AND a.status = 'pending'`,
+    [userId],
+  );
+  return row?.count ?? 0;
 }

@@ -10,9 +10,9 @@ export async function POST(
   return withApi(async () => {
     const { user } = await requireCsrfApi(request);
     const { id } = await params;
-    const result = denyPayment({ approvalId: id, userId: user.id });
+    const result = await denyPayment({ approvalId: id, userId: user.id });
     return ok({
-      payment: paymentView(result.payment),
+      payment: await paymentView(result.payment),
       approval: { id: result.approval.id, status: result.approval.status },
     });
   });

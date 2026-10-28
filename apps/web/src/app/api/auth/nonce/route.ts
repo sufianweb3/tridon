@@ -23,8 +23,8 @@ export async function POST(request: Request): Promise<Response> {
       throw new ApiError(429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
     }
     const { wallet } = await readJson(request, schema);
-    purgeExpiredNonces();
-    const issued = issueAuthNonce(wallet);
+    await purgeExpiredNonces();
+    const issued = await issueAuthNonce(wallet);
     return ok(issued);
   });
 }

@@ -22,7 +22,7 @@ export async function POST(
     const { id } = await params;
     const result = await approvePayment({ approvalId: id, userId: user.id });
     return ok({
-      payment: paymentView(result.payment),
+      payment: await paymentView(result.payment),
       approval: {
         id: result.approval.id,
         status: result.approval.status,

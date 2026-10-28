@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireUserApi(request);
-    const rows = listAudit(100, user.id);
+    const rows = await listAudit(100, user.id);
     return ok({
       events: rows.map((row) => {
         let detail: Record<string, unknown> = {};

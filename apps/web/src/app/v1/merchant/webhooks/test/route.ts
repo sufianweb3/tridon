@@ -7,8 +7,8 @@ const schema = z.object({ url: z.string().url().max(2048).optional() });
 
 export async function POST(request: Request): Promise<Response> {
   return withApi(async () => {
-    const merchant = merchantFromBearer(request);
+    const merchant = await merchantFromBearer(request);
     const body = await readJson(request, schema);
-    return ok(webhookTest({ merchantId: merchant.merchantId, url: body.url ?? null }));
+    return ok(await webhookTest({ merchantId: merchant.merchantId, url: body.url ?? null }));
   });
 }

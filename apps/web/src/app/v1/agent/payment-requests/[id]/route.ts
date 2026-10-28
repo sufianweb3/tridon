@@ -10,15 +10,15 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   return withApi(async () => {
-    const agent = agentFromBearer(request);
+    const agent = await agentFromBearer(request);
     const { id } = await params;
-    const payment = getPayment(id);
+    const payment = await getPayment(id);
     if (!payment || payment.user_id !== agent.userId || payment.agent_id !== agent.agentId) {
       throw new ApiError(404, "PAYMENT_NOT_FOUND", "Payment not found.");
     }
-    const approval = getApprovalForPayment(payment.id);
+    const approval = await getApprovalForPayment(payment.id);
     return ok({
-      payment: paymentView(payment),
+      payment: await paymentView(payment),
       approval: approval
         ? {
             id: approval.id,

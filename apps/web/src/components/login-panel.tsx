@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -10,24 +10,32 @@ import {
   FlaskConical,
   Loader2,
   Lock,
+  Mail,
   Wallet,
 } from "lucide-react";
 import { api, base64ToBytes, errorMessage } from "@/lib/client";
+import { neonAuthClient } from "@/lib/neon-auth-client";
 import { Wordmark, TokenChip } from "@/components/ui";
 
-type Busy = "demo" | "wallet" | null;
+type Busy = "demo" | "wallet" | "email" | null;
 
 export function LoginPanel({
   demoEnabled,
   demoReady,
+  neonEnabled,
 }: {
   demoEnabled: boolean;
   demoReady: boolean;
+  neonEnabled: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [emailMode, setEmailMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
 
   async function demoSignIn() {
     setBusy("demo");
@@ -93,6 +101,38 @@ export function LoginPanel({
     }
   }
 
+  async function emailSignIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("email");
+    setError(null);
+    setNote(null);
+    try {
+      if (password.length < 8) {
+        throw new Error("Use at least 8 characters for the password.");
+      }
+      const result =
+        emailMode === "signup"
+          ? await neonAuthClient.signUp.email({
+              email,
+              password,
+              name: name.trim() || email.split("@")[0] || "AgentSpend user",
+            })
+          : await neonAuthClient.signIn.email({ email, password });
+      if (result.error) {
+        throw new Error(result.error.message ?? "Neon Auth rejected the request.");
+      }
+      // Neon now holds the credential; this call maps that session onto the
+      // application's own HttpOnly session and creates a mock workspace.
+      await api("/api/auth/neon-bridge", { method: "POST" });
+      router.push("/dashboard");
+      router.refresh();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[1.05fr_0.95fr]">
       <div className="flex min-h-screen flex-col px-5 py-6 md:px-10 md:py-8">
@@ -152,6 +192,95 @@ export function LoginPanel({
               <ArrowRight className="h-4 w-4" aria-hidden />
             </button>
           </div>
+
+          {neonEnabled ? (
+            <form
+              onSubmit={emailSignIn}
+              className="mt-3 rounded-xl border border-line bg-paper-deep/40 p-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="label">Email account</span>
+                <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-muted">
+                  <Mail className="h-3 w-3" aria-hidden />
+                  Neon Auth
+                </span>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {emailMode === "signup" ? (
+                  <label className="block">
+                    <span className="sr-only">Display name</span>
+                    <input
+                      className="w-full rounded-lg border border-line-strong bg-[#fffdf8] px-3 py-2 text-sm outline-none placeholder:text-muted/70 focus:border-ink focus:shadow-[0_0_0_3px_rgba(216,255,62,0.35)]"
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      placeholder="Display name (optional)"
+                      autoComplete="name"
+                    />
+                  </label>
+                ) : null}
+                <label className="block">
+                  <span className="sr-only">Email</span>
+                  <input
+                    type="email"
+                    required
+                    className="w-full rounded-lg border border-line-strong bg-[#fffdf8] px-3 py-2 text-sm outline-none placeholder:text-muted/70 focus:border-ink focus:shadow-[0_0_0_3px_rgba(216,255,62,0.35)]"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                  />
+                </label>
+                <label className="block">
+                  <span className="sr-only">Password</span>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    className="w-full rounded-lg border border-line-strong bg-[#fffdf8] px-3 py-2 text-sm outline-none placeholder:text-muted/70 focus:border-ink focus:shadow-[0_0_0_3px_rgba(216,255,62,0.35)]"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="Password (8+ characters)"
+                    autoComplete={emailMode === "signup" ? "new-password" : "current-password"}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={busy !== null}
+                className="btn btn-ghost mt-3 w-full !justify-between !rounded-lg !px-3 !py-2.5 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="flex items-center gap-2">
+                  {busy === "email" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Mail className="h-3.5 w-3.5" aria-hidden />
+                  )}
+                  {emailMode === "signup" ? "Create email account" : "Sign in with email"}
+                </span>
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEmailMode(emailMode === "signup" ? "signin" : "signup");
+                  setError(null);
+                }}
+                className="mt-2 w-full text-center text-[11px] text-muted underline underline-offset-2 hover:text-ink"
+              >
+                {emailMode === "signup"
+                  ? "I already have an email account"
+                  : "Create an email account"}
+              </button>
+
+              <p className="mt-3 text-[10px] leading-4 text-muted">
+                Email sign-in creates a backend-only mock workspace. It does not create an
+                on-chain vault, and TESTUSD is not USDC.
+              </p>
+            </form>
+          ) : null}
 
           {!demoReady ? (
             <div className="mt-4 rounded-xl border border-amber/25 bg-amber-soft/60 p-3 text-xs leading-5 text-amber">

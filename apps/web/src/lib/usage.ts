@@ -1,11 +1,11 @@
 import type { Usage } from "@agentspend/core";
 import { DAY_MS } from "@agentspend/core";
-import { getDb } from "./db";
+import { query, queryOne } from "./db";
 
 /**
  * Usage is derived from budget reservations, not from a mutable counter. A
- * reservation is created in the same SQLite write transaction as the payment,
- * so the sum is the single source of truth for committed and in-flight spend.
+ * reservation is created in the same Postgres transaction as the payment, so
+ * the sum is the single source of truth for committed and in-flight spend.
  *
  * Statuses:
  *  - held: authorized/in-flight/awaiting approval, counts against every cap
@@ -32,33 +32,32 @@ interface ReservationRow {
   status: string;
 }
 
-function rowsForPolicy(policyId: string, excludePaymentId?: string): ReservationRow[] {
-  const params: string[] = [policyId];
+async function rowsForPolicy(policyId: string, excludePaymentId?: string): Promise<ReservationRow[]> {
+  const params: unknown[] = [policyId];
   let exclusion = "";
   if (excludePaymentId) {
     exclusion = " AND br.payment_id != ?";
     params.push(excludePaymentId);
   }
-  return getDb()
-    .prepare(
-      `SELECT br.amount_gross, br.amount_debit, br.created_at, br.status,
-              pr.merchant_id
-       FROM budget_reservations br
-       JOIN payment_requests pr ON pr.id = br.payment_id
-       WHERE br.policy_id = ?
-         AND br.status IN ('held', 'committed')${exclusion}`,
-    )
-    .all(...params) as unknown as ReservationRow[];
+  return query<ReservationRow>(
+    `SELECT br.amount_gross, br.amount_debit, br.created_at, br.status,
+            pr.merchant_id
+     FROM budget_reservations br
+     JOIN payment_requests pr ON pr.id = br.payment_id
+     WHERE br.policy_id = ?
+       AND br.status IN ('held', 'committed')${exclusion}`,
+    params,
+  );
 }
 
-export function reservationTotals(input: {
+export async function reservationTotals(input: {
   policyId: string;
   now: number;
   merchantId?: string;
   windowSecs?: number;
   excludePaymentId?: string;
-}): ReservationTotals {
-  const rows = rowsForPolicy(input.policyId, input.excludePaymentId);
+}): Promise<ReservationTotals> {
+  const rows = await rowsForPolicy(input.policyId, input.excludePaymentId);
   const today = Math.floor(input.now / DAY_MS);
   const weekStart = (today - 6) * DAY_MS;
   const monthStart = (today - 29) * DAY_MS;
@@ -102,24 +101,23 @@ export function reservationTotals(input: {
   };
 }
 
-export function vaultBalanceForPolicy(policyId: string): bigint {
-  const row = getDb()
-    .prepare(
-      `SELECT v.balance FROM policies p JOIN vaults v ON v.id = p.vault_id WHERE p.id = ?`,
-    )
-    .get(policyId) as { balance: string } | undefined;
+export async function vaultBalanceForPolicy(policyId: string): Promise<bigint> {
+  const row = await queryOne<{ balance: string }>(
+    `SELECT v.balance FROM policies p JOIN vaults v ON v.id = p.vault_id WHERE p.id = ?`,
+    [policyId],
+  );
   return BigInt(row?.balance ?? "0");
 }
 
-export function usageForPolicy(input: {
+export async function usageForPolicy(input: {
   policyId: string;
   now: number;
   merchantId: string;
   windowSecs: number;
   excludePaymentId?: string;
-}): Usage {
-  const totals = reservationTotals(input);
-  const balance = vaultBalanceForPolicy(input.policyId);
+}): Promise<Usage> {
+  const totals = await reservationTotals(input);
+  const balance = await vaultBalanceForPolicy(input.policyId);
   return {
     totalGrossCommitted: totals.totalGross,
     dayGross: totals.dayGross,
@@ -131,8 +129,8 @@ export function usageForPolicy(input: {
 }
 
 /** Remaining budget is the total cap minus committed + held gross. */
-export function remainingBudget(policyId: string, totalBudget: bigint): bigint {
-  const totals = reservationTotals({ policyId, now: Date.now() });
+export async function remainingBudget(policyId: string, totalBudget: bigint): Promise<bigint> {
+  const totals = await reservationTotals({ policyId, now: Date.now() });
   return totals.totalGross >= totalBudget ? 0n : totalBudget - totals.totalGross;
 }
 
@@ -149,13 +147,13 @@ export interface BudgetSummary {
   availableBalance: bigint;
 }
 
-export function budgetSummary(input: {
+export async function budgetSummary(input: {
   policyId: string;
   totalBudget: bigint;
   now: number;
-}): BudgetSummary {
-  const totals = reservationTotals({ policyId: input.policyId, now: input.now });
-  const balance = vaultBalanceForPolicy(input.policyId);
+}): Promise<BudgetSummary> {
+  const totals = await reservationTotals({ policyId: input.policyId, now: input.now });
+  const balance = await vaultBalanceForPolicy(input.policyId);
   const committed = totals.totalGross;
   return {
     totalBudget: input.totalBudget,

@@ -1,5 +1,5 @@
 import { parseUnits } from "@agentspend/core";
-import { getDb, now } from "./db";
+import { execute, now, query, queryOne } from "./db";
 
 export interface MerchantSeed {
   id: string;
@@ -128,11 +128,10 @@ export const MERCHANTS: MerchantSeed[] = [
   },
 ];
 
-export function ensureMerchants(): void {
-  const db = getDb();
+export async function ensureMerchants(): Promise<void> {
   const timestamp = now();
   for (const merchant of MERCHANTS) {
-    db.prepare(
+    await execute(
       `INSERT INTO merchants (id, name, slug, payout_account, category, description, accent, active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
        ON CONFLICT(id) DO UPDATE SET
@@ -142,18 +141,19 @@ export function ensureMerchants(): void {
          description = excluded.description,
          accent = excluded.accent,
          active = 1`,
-    ).run(
-      merchant.id,
-      merchant.name,
-      merchant.slug,
-      merchant.payoutAccount,
-      merchant.category,
-      merchant.description,
-      merchant.accent,
-      timestamp,
+      [
+        merchant.id,
+        merchant.name,
+        merchant.slug,
+        merchant.payoutAccount,
+        merchant.category,
+        merchant.description,
+        merchant.accent,
+        timestamp,
+      ],
     );
     for (const service of merchant.services) {
-      db.prepare(
+      await execute(
         `INSERT INTO merchant_services (id, merchant_id, name, description, price, asset, network, active, created_at)
          VALUES (?, ?, ?, ?, ?, 'TESTUSD', 'testnet', 1, ?)
          ON CONFLICT(id) DO UPDATE SET
@@ -161,44 +161,40 @@ export function ensureMerchants(): void {
            description = excluded.description,
            price = excluded.price,
            active = 1`,
-      ).run(
-        service.id,
-        merchant.id,
-        service.name,
-        service.description,
-        parseUnits(service.price).toString(),
-        timestamp,
+        [
+          service.id,
+          merchant.id,
+          service.name,
+          service.description,
+          parseUnits(service.price).toString(),
+          timestamp,
+        ],
       );
     }
   }
 }
 
-export function merchantById(id: string): MerchantSeed | null {
-  const row = getDb().prepare("SELECT payout_account FROM merchants WHERE id = ?").get(id) as
-    | { payout_account: string }
-    | undefined;
+export async function merchantById(id: string): Promise<MerchantSeed | null> {
+  const row = await queryOne<{ payout_account: string }>(
+    "SELECT payout_account FROM merchants WHERE id = ?",
+    [id],
+  );
   if (!row) return null;
   const seed = MERCHANTS.find((merchant) => merchant.id === id);
   if (!seed) return null;
   return { ...seed, payoutAccount: row.payout_account };
 }
 
-export function merchantServices(merchantId: string): Array<{
+export async function merchantServices(merchantId: string): Promise<Array<{
   id: string;
   name: string;
   description: string;
   price: string;
   asset: string;
   network: string;
-}> {
-  return getDb()
-    .prepare("SELECT * FROM merchant_services WHERE merchant_id = ? AND active = 1 ORDER BY price")
-    .all(merchantId) as unknown as Array<{
-    id: string;
-    name: string;
-    description: string;
-    price: string;
-    asset: string;
-    network: string;
-  }>;
+}>> {
+  return query(
+    "SELECT * FROM merchant_services WHERE merchant_id = ? AND active = 1 ORDER BY price",
+    [merchantId],
+  );
 }

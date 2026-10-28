@@ -1,5 +1,5 @@
 import { ok, withApi } from "@/lib/api";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 import { policyForUser, ruleForMerchant } from "@/lib/policies";
 import { requireUserApi } from "@/lib/server-auth";
 import { merchantServices } from "@/lib/seed-data";
@@ -9,10 +9,8 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireUserApi(request);
-    const policy = policyForUser(user.id);
-    const merchants = getDb()
-      .prepare("SELECT * FROM merchants WHERE active = 1 ORDER BY name")
-      .all() as unknown as Array<{
+    const policy = await policyForUser(user.id);
+    const merchants = await query<{
       id: string;
       name: string;
       slug: string;
@@ -20,9 +18,9 @@ export async function GET(request: Request): Promise<Response> {
       description: string;
       payout_account: string;
       accent: string;
-    }>;
-    return ok({
-      merchants: merchants.map((merchant) => {
+    }>("SELECT * FROM merchants WHERE active = 1 ORDER BY name");
+    const rows = await Promise.all(
+      merchants.map(async (merchant) => {
         const rule = policy ? ruleForMerchant(policy, merchant.id) : null;
         return {
           id: merchant.id,
@@ -42,9 +40,10 @@ export async function GET(request: Request): Promise<Response> {
                 requiresApproval: rule.requires_approval === 1,
               }
             : null,
-          services: merchantServices(merchant.id),
+          services: await merchantServices(merchant.id),
         };
       }),
-    });
+    );
+    return ok({ merchants: rows });
   });
 }

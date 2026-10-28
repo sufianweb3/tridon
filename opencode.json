@@ -5,5 +5,12 @@
     "PRD.md",
     "docs/INTEGRATIONS.md",
     "docs/architecture/decision-record.md"
-  ]
+  ],
+  "mcp": {
+    "Neon": {
+      "type": "remote",
+      "url": "https://mcp.neon.tech/mcp",
+      "enabled": true
+    }
+  }
 }

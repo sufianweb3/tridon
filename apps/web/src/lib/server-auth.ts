@@ -23,7 +23,7 @@ export async function currentSession(): Promise<{
   session: UserSession;
 } | null> {
   const store = await cookies();
-  return userFromCookieHeader(cookieHeaderFromStore(store));
+  return await userFromCookieHeader(cookieHeaderFromStore(store));
 }
 
 export async function requireUserPage(): Promise<{ user: AuthUser; session: UserSession }> {
@@ -36,7 +36,7 @@ export async function requireUserApi(request: Request): Promise<{
   user: AuthUser;
   session: UserSession;
 }> {
-  const session = userFromCookieHeader(request.headers.get("cookie"));
+  const session = await userFromCookieHeader(request.headers.get("cookie"));
   if (!session) {
     throw new ApiError(401, "UNAUTHENTICATED", "Sign in to continue.");
   }
@@ -58,7 +58,7 @@ export async function currentMerchant(): Promise<{
   expiresAt: number;
 } | null> {
   const store = await cookies();
-  return merchantFromCookieHeader(cookieHeaderFromStore(store));
+  return await merchantFromCookieHeader(cookieHeaderFromStore(store));
 }
 
 export async function requireMerchantPage(): Promise<{

@@ -9,7 +9,7 @@ export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireUserApi(request);
     const { limit, offset } = pagination(request.url);
-    const rows = listPayments({
+    const rows = await listPayments({
       userId: user.id,
       limit,
       offset,
@@ -18,8 +18,8 @@ export async function GET(request: Request): Promise<Response> {
       agentId: queryParam(request, "agentId"),
     });
     return ok({
-      payments: rows.map(paymentView),
-      total: paymentCount(user.id),
+      payments: await Promise.all(rows.map(paymentView)),
+      total: await paymentCount(user.id),
       limit,
       offset,
     });

@@ -32,7 +32,7 @@ If you want to reset the workspace, stop the server, run `pnpm db:reset -- --yes
 
 1. Open <http://localhost:3000>.
 2. Confirm the landing page says **NEAR TESTNET** and **TESTUSD · DEMO TOKEN**.
-3. Click **Enter the demo workspace** (or go to `/login` and use the demo button).
+3. Click **Enter the live demo** (or go to `/login` and use the demo button).
 4. You should land on **Control room**.
 
 Check:
@@ -235,7 +235,66 @@ Check:
 
 ---
 
-## 12. Final automated checks
+## 12. Neon services
+
+These checks exercise the Neon integrations. They are additive; the payment rail still
+works if a service is unconfigured, but the UI shows an explicit error instead.
+
+### 12.1 Realtime ledger
+
+1. Stay on the dashboard and keep the tab open.
+2. In another tab or with the Agent API, create a **denied** $50.00 DataForge payment.
+3. Return to the dashboard without reloading.
+
+Expected:
+
+- [ ] The ledger header shows **LIVE · NEON REALTIME**.
+- [ ] The new `DENIED` row appears at the top within a few seconds.
+- [ ] No page reload was needed.
+
+### 12.2 Receipt in Object Storage
+
+1. Open a `succeeded` payment with settlement evidence (for example the $3.50 Northstar
+   payment).
+2. Find the receipt section on the transaction page.
+3. Click **Download from Neon Object Storage**.
+
+Expected:
+
+- [ ] The link is a presigned URL on the `...storage...neon.tech` host.
+- [ ] The JSON contains the payment id, status, gross/net/fees, `asset.symbol: TESTUSD`,
+      and `asset.isCircleUsdc: false`.
+- [ ] The settlement transaction hash is present when the payment has one.
+
+### 12.3 Deployed Neon Function
+
+1. Open **Agent API** (`/integrations`).
+2. Find the **Ask the deployed function, not this server** card.
+3. Click **Query function**.
+
+Expected:
+
+- [ ] The card shows the agent, policy version, per-transaction limit, and payment counts.
+- [ ] The footer says **Answered by agentspend-status** with a timestamp.
+- [ ] The shared secret is not visible in the browser.
+
+### 12.4 Neon Auth email account
+
+1. Sign out.
+2. On `/login`, click **Create an email account**.
+3. Sign up with a fresh email and a password of 8+ characters.
+
+Expected:
+
+- [ ] You land on the dashboard with a backend-only mock workspace.
+- [ ] The sidebar says **Neon Auth · backend mock rail** and **Backend-only session**.
+- [ ] The dashboard says the mock rail is backend-enforced; no vault or on-chain key is
+      created.
+- [ ] TESTUSD labelling is still present.
+
+---
+
+## 13. Final automated checks
 
 With the dev server running:
 
@@ -263,3 +322,6 @@ agent bearer, and reads the merchant summary.
 | Agent creation takes ~20s | It waits for the on-chain key transaction to reach FINAL |
 | Budget looks lower than expected | Seeded demo payments are committed; edit the policy or reset the workspace |
 | Port 3000 in use | Stop the other process, or start with `pnpm --filter @agentspend/web dev -- -p 3001` and set `AGENTSPEND_APP_URL` |
+| `FUNCTION_NOT_CONFIGURED` / `REALTIME_NOT_CONFIGURED` | The Neon function URL or Realtime secret is missing from `.env.local`; run `neon deploy --env .env.local` |
+| `NEON_AUTH_NOT_CONFIGURED` | `NEON_AUTH_BASE_URL` or a 32+ byte `NEON_AUTH_COOKIE_SECRET` is missing |
+| Login pages return 500 on Vercel | Set the Neon environment variables in Vercel (see README) and redeploy |

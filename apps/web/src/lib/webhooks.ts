@@ -1,5 +1,5 @@
 import { randomId, randomToken, webhookSignature } from "./crypto";
-import { getDb, now } from "./db";
+import { execute, now, query, queryOne } from "./db";
 
 /**
  * Merchant webhooks are signed with HMAC-SHA256 over `<timestamp>.<body>`.
@@ -51,41 +51,33 @@ export function webhookPayload(input: EmitEventInput, eventId: string): string {
 }
 
 /** Queue one delivery per active endpoint. Returns the event id. */
-export function emitMerchantEvent(input: EmitEventInput): string | null {
-  const endpoints = getDb()
-    .prepare("SELECT * FROM webhook_endpoints WHERE merchant_id = ? AND active = 1")
-    .all(input.merchantId) as unknown as WebhookEndpointRow[];
+export async function emitMerchantEvent(input: EmitEventInput): Promise<string | null> {
+  const endpoints = await query<WebhookEndpointRow>(
+    "SELECT * FROM webhook_endpoints WHERE merchant_id = ? AND active = 1",
+    [input.merchantId],
+  );
   if (endpoints.length === 0) return null;
   const eventId = randomId("evt_");
   const payload = webhookPayload(input, eventId);
   for (const endpoint of endpoints) {
-    getDb()
-      .prepare(
-        `INSERT INTO webhook_deliveries (id, endpoint_id, payment_id, event_id, event_type, payload,
-          status, attempts, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)
-         ON CONFLICT(endpoint_id, event_id) DO NOTHING`,
-      )
-      .run(
-        randomId("whd_"),
-        endpoint.id,
-        input.paymentId,
-        eventId,
-        input.eventType,
-        payload,
-        now(),
-      );
+    await execute(
+      `INSERT INTO webhook_deliveries (id, endpoint_id, payment_id, event_id, event_type, payload,
+        status, attempts, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)
+       ON CONFLICT(endpoint_id, event_id) DO NOTHING`,
+      [randomId("whd_"), endpoint.id, input.paymentId, eventId, input.eventType, payload, now()],
+    );
   }
   return eventId;
 }
 
-export function listWebhookEndpoints(merchantId: string): Array<Omit<WebhookEndpointRow, "secret">> {
-  const rows = getDb()
-    .prepare(
-      "SELECT id, merchant_id, url, active, created_at FROM webhook_endpoints WHERE merchant_id = ? ORDER BY created_at DESC",
-    )
-    .all(merchantId) as unknown as Array<Omit<WebhookEndpointRow, "secret">>;
-  // node:sqlite returns null-prototype rows; copy before they reach a client component.
+export async function listWebhookEndpoints(
+  merchantId: string,
+): Promise<Array<Omit<WebhookEndpointRow, "secret">>> {
+  const rows = await query<WebhookEndpointRow>(
+    "SELECT id, merchant_id, url, active, created_at FROM webhook_endpoints WHERE merchant_id = ? ORDER BY created_at DESC",
+    [merchantId],
+  );
   return rows.map((row) => ({
     id: row.id,
     merchant_id: row.merchant_id,
@@ -95,49 +87,52 @@ export function listWebhookEndpoints(merchantId: string): Array<Omit<WebhookEndp
   }));
 }
 
-export function createWebhookEndpoint(input: {
+export async function createWebhookEndpoint(input: {
   merchantId: string;
   url: string;
-}): { endpoint: Omit<WebhookEndpointRow, "secret">; secret: string } {
+}): Promise<{ endpoint: Omit<WebhookEndpointRow, "secret">; secret: string }> {
   const parsed = parseWebhookUrl(input.url);
   const secret = randomToken("whsec_", 32);
   const id = randomId("whe_");
-  getDb()
-    .prepare(
-      `INSERT INTO webhook_endpoints (id, merchant_id, url, secret, active, created_at)
-       VALUES (?, ?, ?, ?, 1, ?)`,
-    )
-    .run(id, input.merchantId, parsed.toString(), secret, now());
+  const createdAt = now();
+  await execute(
+    `INSERT INTO webhook_endpoints (id, merchant_id, url, secret, active, created_at)
+     VALUES (?, ?, ?, ?, 1, ?)`,
+    [id, input.merchantId, parsed.toString(), secret, createdAt],
+  );
   return {
     endpoint: {
       id,
       merchant_id: input.merchantId,
       url: parsed.toString(),
       active: 1,
-      created_at: now(),
+      created_at: createdAt,
     },
     secret,
   };
 }
 
-export function deactivateWebhookEndpoint(merchantId: string, endpointId: string): boolean {
-  const result = getDb()
-    .prepare("UPDATE webhook_endpoints SET active = 0 WHERE id = ? AND merchant_id = ?")
-    .run(endpointId, merchantId);
-  return Number(result.changes) > 0;
+export async function deactivateWebhookEndpoint(
+  merchantId: string,
+  endpointId: string,
+): Promise<boolean> {
+  const changed = await execute(
+    "UPDATE webhook_endpoints SET active = 0 WHERE id = ? AND merchant_id = ?",
+    [endpointId, merchantId],
+  );
+  return changed > 0;
 }
 
-export function listWebhookDeliveries(
+export async function listWebhookDeliveries(
   merchantId: string,
   limit = 25,
-): WebhookDeliveryRow[] {
-  const rows = getDb()
-    .prepare(
-      `SELECT d.* FROM webhook_deliveries d
-       JOIN webhook_endpoints e ON e.id = d.endpoint_id
-       WHERE e.merchant_id = ? ORDER BY d.created_at DESC LIMIT ?`,
-    )
-    .all(merchantId, limit) as unknown as WebhookDeliveryRow[];
+): Promise<WebhookDeliveryRow[]> {
+  const rows = await query<WebhookDeliveryRow>(
+    `SELECT d.* FROM webhook_deliveries d
+     JOIN webhook_endpoints e ON e.id = d.endpoint_id
+     WHERE e.merchant_id = ? ORDER BY d.created_at DESC LIMIT ?`,
+    [merchantId, limit],
+  );
   return rows.map((row) => ({
     id: row.id,
     endpoint_id: row.endpoint_id,
@@ -179,23 +174,24 @@ function parseWebhookUrl(raw: string): URL {
 }
 
 export async function deliverWebhook(deliveryId: string): Promise<boolean> {
-  const delivery = getDb()
-    .prepare("SELECT * FROM webhook_deliveries WHERE id = ?")
-    .get(deliveryId) as WebhookDeliveryRow | undefined;
+  const delivery = await queryOne<WebhookDeliveryRow>(
+    "SELECT * FROM webhook_deliveries WHERE id = ?",
+    [deliveryId],
+  );
   if (!delivery || delivery.status === "delivered" || delivery.status === "failed") return false;
-  const endpoint = getDb()
-    .prepare("SELECT * FROM webhook_endpoints WHERE id = ? AND active = 1")
-    .get(delivery.endpoint_id) as WebhookEndpointRow | undefined;
+  const endpoint = await queryOne<WebhookEndpointRow>(
+    "SELECT * FROM webhook_endpoints WHERE id = ? AND active = 1",
+    [delivery.endpoint_id],
+  );
   if (!endpoint) return false;
   let url: URL;
   try {
     url = parseWebhookUrl(endpoint.url);
   } catch (error) {
-    getDb()
-      .prepare(
-        `UPDATE webhook_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ? WHERE id = ?`,
-      )
-      .run(error instanceof Error ? error.message : "URL rejected", deliveryId);
+    await execute(
+      `UPDATE webhook_deliveries SET status = 'failed', attempts = attempts + 1, last_error = ? WHERE id = ?`,
+      [error instanceof Error ? error.message : "URL rejected", deliveryId],
+    );
     return false;
   }
 
@@ -218,31 +214,28 @@ export async function deliverWebhook(deliveryId: string): Promise<boolean> {
     if (!response.ok) {
       throw new Error(`Webhook endpoint returned HTTP ${response.status}`);
     }
-    getDb()
-      .prepare(
-        `UPDATE webhook_deliveries SET status = 'delivered', attempts = ?, delivered_at = ?, last_error = NULL WHERE id = ?`,
-      )
-      .run(attempts, now(), deliveryId);
+    await execute(
+      `UPDATE webhook_deliveries SET status = 'delivered', attempts = ?, delivered_at = ?, last_error = NULL WHERE id = ?`,
+      [attempts, now(), deliveryId],
+    );
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : "webhook delivery failed";
-    getDb()
-      .prepare(
-        `UPDATE webhook_deliveries SET status = ?, attempts = ?, last_error = ? WHERE id = ?`,
-      )
-      .run(attempts >= 5 ? "failed" : "pending", attempts, message.slice(0, 400), deliveryId);
+    await execute(
+      `UPDATE webhook_deliveries SET status = ?, attempts = ?, last_error = ? WHERE id = ?`,
+      [attempts >= 5 ? "failed" : "pending", attempts, message.slice(0, 400), deliveryId],
+    );
     return false;
   }
 }
 
 /** Retry pending deliveries. Called by the operator, never on a timer. */
 export async function dispatchPendingWebhooks(limit = 10): Promise<number> {
-  const rows = getDb()
-    .prepare(
-      `SELECT id FROM webhook_deliveries WHERE status = 'pending' AND attempts < 5
-       ORDER BY created_at ASC LIMIT ?`,
-    )
-    .all(limit) as unknown as Array<{ id: string }>;
+  const rows = await query<{ id: string }>(
+    `SELECT id FROM webhook_deliveries WHERE status = 'pending' AND attempts < 5
+     ORDER BY created_at ASC LIMIT ?`,
+    [limit],
+  );
   let delivered = 0;
   for (const row of rows) {
     if (await deliverWebhook(row.id)) delivered += 1;
@@ -250,17 +243,17 @@ export async function dispatchPendingWebhooks(limit = 10): Promise<number> {
   return delivered;
 }
 
-export function webhookTest(input: {
+export async function webhookTest(input: {
   merchantId: string;
   url?: string | null;
-}): {
+}): Promise<{
   eventId: string;
   eventType: string;
   payload: string;
   signatureHeader: string;
   deliverable: boolean;
   note: string;
-} {
+}> {
   const eventId = randomId("evt_test_");
   const payload = webhookPayload(
     {
@@ -282,12 +275,11 @@ export function webhookTest(input: {
     }
   }
   const endpoint = input.url
-    ? (getDb()
-        .prepare(
-          "SELECT * FROM webhook_endpoints WHERE merchant_id = ? AND url = ? AND active = 1",
-        )
-        .get(input.merchantId, input.url) as WebhookEndpointRow | undefined)
-    : undefined;
+    ? await queryOne<WebhookEndpointRow>(
+        "SELECT * FROM webhook_endpoints WHERE merchant_id = ? AND url = ? AND active = 1",
+        [input.merchantId, input.url],
+      )
+    : null;
   if (endpoint) secret = endpoint.secret;
   const timestamp = Math.floor(now() / 1000);
   return {

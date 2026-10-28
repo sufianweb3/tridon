@@ -17,8 +17,8 @@ export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { merchant } = await requireMerchantApi();
     return ok({
-      endpoints: listWebhookEndpoints(merchant.merchantId),
-      deliveries: listWebhookDeliveries(merchant.merchantId),
+      endpoints: await listWebhookEndpoints(merchant.merchantId),
+      deliveries: await listWebhookDeliveries(merchant.merchantId),
     });
   });
 }
@@ -28,7 +28,7 @@ export async function POST(request: Request): Promise<Response> {
     const { merchant } = await requireMerchantCsrfApi(request);
     const body = await readJson(request, createSchema);
     try {
-      const result = createWebhookEndpoint({ merchantId: merchant.merchantId, url: body.url });
+      const result = await createWebhookEndpoint({ merchantId: merchant.merchantId, url: body.url });
       return ok(
         {
           endpoint: result.endpoint,
@@ -52,7 +52,7 @@ export async function DELETE(request: Request): Promise<Response> {
   return withApi(async () => {
     const { merchant } = await requireMerchantCsrfApi(request);
     const body = await readJson(request, deactivateSchema);
-    const removed = deactivateWebhookEndpoint(merchant.merchantId, body.endpointId);
+    const removed = await deactivateWebhookEndpoint(merchant.merchantId, body.endpointId);
     return ok({ deactivated: removed });
   });
 }
@@ -61,6 +61,6 @@ export async function PUT(request: Request): Promise<Response> {
   return withApi(async () => {
     const { merchant } = await requireMerchantCsrfApi(request);
     const body = await readJson(request, testSchema);
-    return ok(webhookTest({ merchantId: merchant.merchantId, url: body.url ?? null }));
+    return ok(await webhookTest({ merchantId: merchant.merchantId, url: body.url ?? null }));
   });
 }

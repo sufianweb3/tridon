@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowUpRight, ShieldCheck } from "lucide-react";
 import { requireUserPage } from "@/lib/server-auth";
 import { policyForUser, policyView } from "@/lib/policies";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 import { vaultForUser } from "@/lib/platform";
 import { shortAccount } from "@/lib/format";
 import { Callout, EmptyState, PageHeader, RailBadge } from "@/components/ui";
@@ -13,8 +13,8 @@ export const dynamic = "force-dynamic";
 
 export default async function PolicyPage() {
   const { user, session } = await requireUserPage();
-  const policy = policyForUser(user.id);
-  const vault = vaultForUser(user.id);
+  const policy = await policyForUser(user.id);
+  const vault = await vaultForUser(user.id);
 
   if (!policy) {
     return (
@@ -40,16 +40,14 @@ export default async function PolicyPage() {
     );
   }
 
-  const view = policyView(policy);
+  const view = await policyView(policy);
   const rulesById = new Map(view.rules.map((rule) => [rule.merchantId, rule]));
-  const merchants = getDb()
-    .prepare("SELECT id, name, category, payout_account FROM merchants WHERE active = 1 ORDER BY name")
-    .all() as unknown as Array<{
+  const merchants = await query<{
     id: string;
     name: string;
     category: string;
     payout_account: string;
-  }>;
+  }>("SELECT id, name, category, payout_account FROM merchants WHERE active = 1 ORDER BY name");
   const options: MerchantOption[] = merchants.map((merchant) => {
     const rule = rulesById.get(merchant.id);
     return {

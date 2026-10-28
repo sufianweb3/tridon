@@ -10,11 +10,11 @@ export async function POST(
   return withApi(async () => {
     const { user } = await requireCsrfApi(request);
     const { id } = await params;
-    const existing = getPayment(id);
+    const existing = await getPayment(id);
     if (!existing || existing.user_id !== user.id) {
       throw new ApiError(404, "PAYMENT_NOT_FOUND", "Payment not found.");
     }
     const payment = await reconcilePayment(id);
-    return ok({ payment: paymentView(payment) });
+    return ok({ payment: await paymentView(payment) });
   });
 }

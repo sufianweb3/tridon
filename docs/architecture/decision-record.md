@@ -1,7 +1,7 @@
 # Architecture decision record — AgentSpend
 
 **Status:** Decided for testnet MVP. **Mainnet spending is NOT approved.**
-**Last updated:** 2026-10-24
+**Last updated:** 2026-10-28
 **Owner:** Architecture / security review
 **Supersedes:** the placeholder ADR (all sections were `TBD`)
 
@@ -16,7 +16,7 @@ implementation code is written until this document is reviewed.
 | # | Decision | Choice | Confidence |
 |---|---|---|---|
 | D1 | Demo network | NEAR **testnet** only | High |
-| D2 | Demo asset | Circle-issued **USDC** (NEP-141, 6 decimals) | High |
+| D2 | Demo asset | Clearly labelled **`TESTUSD`** NEP-141 test token, 6 decimals. Circle testnet USDC was not used; the deviation and its labelling are recorded in §14.10. | High |
 | D3 | Scoped authority | **Per-user policy/vault contract** + agent-specific NEAR **function-call key** managed by that contract | High on mechanism, must pass Phase 0 spike |
 | D4 | Where limits are enforced | **Hard limits on-chain** in the vault contract; backend is a fast-fail pre-check and UX layer | High |
 | D5 | Merchant payout | Direct NEP-141 `ft_transfer` from the vault to a **payout account pinned in on-chain state** | High |
@@ -24,7 +24,7 @@ implementation code is written until this document is reviewed.
 | D7 | Wallet connection | `@hot-labs/near-connect` 0.11.4 + **NEP-413** `signMessage` for backend session auth | Medium-high |
 | D8 | NEAR Intents | **Rejected for MVP.** Deferred to cross-chain funding/swap scope | High |
 | D9 | x402 | **Rejected as the authorization layer.** Kept as a future merchant-facing adapter | Medium-high |
-| D10 | Application stack | pnpm TypeScript monorepo, Next.js UI, Postgres + Drizzle, Rust contract | Medium |
+| D10 | Application stack | pnpm TypeScript monorepo, Next.js UI, **Neon Postgres via `pg` (no ORM)**, Rust contract | High |
 | D11 | Custody model | Per-user, user-owned, non-upgradeable vault. **The platform holds no key on any vault and no pooled balance.** | High |
 
 The single most important finding: **a function-call access key scoped to a policy contract,
@@ -64,6 +64,13 @@ requires the user to be online per payment, or gives the holder unrestricted tra
 
 Monetary arithmetic is integer base units (6 decimals for USDC). `1 USDC = 1_000_000` base units.
 Floats are forbidden in the policy engine, the ledger and the contract.
+
+> **Implementation note (2026-10-28):** the table above records the Circle testnet USDC
+> research that informed the design. The shipped demo does **not** use Circle USDC. It
+> deploys `as-testusd-mvpk08ejfxll.testnet`, a project-owned NEP-141 token with symbol
+> `TESTUSD`, and labels it as a demo token in the UI, receipts, API responses and README.
+> The rail adapter is asset-agnostic; switching to Circle USDC is a configuration change
+> plus storage registration, not a rewrite.
 
 ### 2.2 Access keys — the pivotal capability
 
@@ -815,6 +822,12 @@ cargo test --manifest-path contracts/vault/Cargo.toml
 cargo near build --manifest-path contracts/vault/Cargo.toml
 ```
 
+> **Actual scripts (2026-10-28):** `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm build`,
+> `pnpm seed`, `pnpm db:reset`. `pnpm lint` is not usable because ESLint is not configured;
+> `next lint` prompts for setup. `pnpm format:check` and `pnpm test:integration` do not exist.
+> The verification gates actually run are typecheck, unit tests, the HTTP e2e suite and the
+> production build. See §14.8 for the recorded results.
+
 Native `near-workspaces` tests run against a sandbox node and are part of `pnpm test:integration`.
 
 Done means: all twelve acceptance tests pass on testnet; no secret in the repo or its history; no
@@ -879,3 +892,233 @@ Not authorized: mainnet deployment, real funds, custody of user balances by the 
 claim of audit/security certification. Mainnet requires a separate review covering the finalized
 contract, the deployment/key-provisioning flow, the verifier's RPC assumptions, fee collection, and
 an independent security assessment.
+
+---
+
+## 14. Neon platform integration (2026-10-28)
+
+**Status:** Implemented and verified on the `production` branch. The NEAR vault remains the
+authority for money movement; Neon supplies the application database, auth, receipt storage, a
+server-to-server status function and a live-query channel. None of these services can move vault
+funds or override on-chain policy.
+
+### 14.0 Provisioned resources
+
+| Item | Value |
+|---|---|
+| Neon project | `AgentPay` — `purple-waterfall-83699910` |
+| Organization | `org-weathered-art-78461221` |
+| Branch | `production` — `br-shiny-fog-b5cvby2j` |
+| Region | `aws-us-east-2` |
+| Postgres | pooled `DATABASE_URL`; direct `DATABASE_URL_UNPOOLED` |
+| Auth | Managed Better Auth at `https://ep-proud-darkness-b58b4s2i.neonauth.c-7.us-east-2.aws.neon.tech/neondb/auth` |
+| Object Storage | bucket `assets` (private), S3 endpoint `https://br-shiny-fog-b5cvby2j.storage.c-7.us-east-2.aws.neon.tech` |
+| Function | `hello` → `agentspend-status`, `https://br-shiny-fog-b5cvby2j-hello.compute.c-7.us-east-2.aws.neon.tech/` |
+| Realtime | `https://ep-proud-darkness-b58b4s2i.rt.c-7.us-east-2.aws.neon.tech` |
+
+The Neon CLI is `8.13.1`. The project is linked through `.neon/` (gitignored). `neon.ts` declares
+`auth: true`, the `assets` private bucket, the `hello` function and its
+`AGENTSPEND_FUNCTION_SECRET`, and Realtime preview support. The canonical environment file is the
+**repository-root** `.env.local`, written by `neon deploy --env .env.local`; `apps/web/next.config.ts`
+loads it (and then `.env`) for `next dev`, `next build` and `next start`, with existing process env
+taking precedence. Root scripts use `tsx --env-file-if-exists=.env.local`.
+
+### 14.1 Postgres — chosen approach
+
+- **Driver:** `pg` (node-postgres) with one global `Pool`, not `@neondatabase/serverless`. The app
+  runs on the Node.js runtime, needs interactive transactions and Postgres advisory locks, and
+  already had a SQL-shaped data layer. `DATABASE_URL` is the pooled endpoint; migrations and
+  one-off scripts can use `DATABASE_URL_UNPOOLED`.
+- **Async data layer:** the original synchronous SQLite calls were replaced by
+  `query` / `queryOne` / `execute` / `withTransaction`. `withTransaction` stores the `PoolClient` in
+  `AsyncLocalStorage`, so nested helpers join the same transaction without threading a client
+  argument. SQL keeps `?` placeholders; `toPg()` rewrites them to `$n` at one boundary.
+- **Concurrency:** `createPayment` takes `pg_advisory_xact_lock(hashtext('agent:<agentId>'))`
+  before the budget pre-check and reservation. This serializes the check-and-reserve critical
+  section across app instances. `ensureSchema()` uses a separate advisory lock so concurrent
+  cold starts cannot race the DDL.
+- **Schema:** `ensureSchema()` creates the full schema and applies additive `ALTER TABLE` /
+  unique-index migrations. `users.email`, `users.neon_user_id` and `settlements.receipt_key` were
+  added this way. Money remains decimal `TEXT` parsed to `bigint`; no float touches a monetary
+  value. `types.setTypeParser(20, Number)` is installed only for millisecond timestamps and counts.
+- **Alternatives rejected:** `@neondatabase/serverless` HTTP driver (no interactive transactions or
+  advisory locks); Drizzle ORM (the SQL layer already existed and was audited); keeping SQLite
+  (single-writer, unsuitable for a multi-instance deployment).
+- **Risks:** pooled connection limits and cold starts; `pg` 8 treats `sslmode=require` as
+  `verify-full` and emits a warning, with semantics changing in `pg` 9; an advisory-lock hash
+  collision would serialize two unrelated agents, which is safe but slower.
+
+### 14.2 Neon Auth — chosen approach
+
+- `@neondatabase/auth@0.7.0-beta` (Managed Better Auth) is mounted at `/api/auth/[...path]`.
+  Static routes (`/api/auth/demo`, `/nonce`, `/verify`, `/logout`, `/neon-bridge`) take precedence.
+- A successful Neon email/password session is exchanged at `POST /api/auth/neon-bridge` for the
+  application's own HttpOnly session cookie. `findOrCreateNeonUser` maps
+  `neon_user_id` + `email` onto the existing `users` table; `ensureMockWorkspace` gives the account
+  a **backend-only mock rail** workspace. The UI labels it `Neon Auth · backend mock rail` and
+  `Backend-only session`.
+- This is **additive**: the one-click testnet demo and NEP-413 wallet login are unchanged. Email
+  accounts do not receive a vault, a signer or an on-chain key.
+- **Alternatives rejected:** replacing the demo/NEP-413 flow (would break the live testnet demo);
+  adding Clerk/Auth0 (another vendor and another identity store); self-managed Better Auth (more
+  operational surface than the managed service).
+- **Risks:** the package is beta and declares an optional Next `>=16` peer while the app runs Next
+  `15.5.28` (verified working); email verification is **not** enforced by the bridge, so a
+  production deployment must enable and require it; the bridge is a one-way session exchange and
+  does not synchronise later profile changes; production domains and trusted origins must be
+  configured in Neon Auth; `NEON_AUTH_COOKIE_SECRET` must be a stable 32+ byte secret.
+
+### 14.3 Object Storage — chosen approach
+
+- Settlement receipt JSON is written to the private `assets` bucket at
+  `receipts/<paymentId>.json` through the AWS SDK v3 with `forcePathStyle: true`, using the
+  branch-scoped `AWS_*` variables that Neon writes. The transaction page requests a **300-second
+  presigned GET** and labels it “Download from Neon Object Storage”.
+- `settlements.receipt_key` records the object key. The receipt includes the payment id, status,
+  gross/net/fees, asset `TESTUSD`, `isCircleUsdc: false`, payout and settlement transaction hash
+  where one exists.
+- **Alternatives rejected:** storing receipt JSON in Postgres (bloats the ledger and backups);
+  a public bucket (leaks payment metadata); Vercel Blob (new vendor, no need).
+- **Risks:** presigned URLs are bearer capabilities until they expire; storage credentials are
+  branch-scoped and must be rotated through Neon, not committed; the object is evidence, never the
+  authority for payment state.
+
+### 14.4 Neon Functions — chosen approach
+
+- `hello.ts` exports a `fetch` handler named `agentspend-status`. It queries Postgres directly
+  (it does not import `apps/web`) for one agent's policy, balance and payment totals, or one
+  payment's status. `attachDatabasePool` manages its pool.
+- It is **server-to-server only**: requests must present
+  `Authorization: Bearer <AGENTSPEND_FUNCTION_SECRET>`, compared with `timingSafeEqual`. Without
+  the secret it returns `401 {"ok":false,"error":"UNAUTHORIZED"}`. `GET` only.
+- The app proxy `POST /api/neon/function-status` requires a signed-in user, keeps the shared secret
+  on the server, applies an 8-second timeout, and returns the function's answer to the
+  `/integrations` card.
+- **Alternatives rejected:** a Next API route pretending to be a Neon Function (does not exercise
+  the service); a public function (would expose tenant data); per-user JWTs (the function is an
+  operator/status probe, not a user API).
+- **Risks:** the shared secret is a long-lived credential; rotating it requires updating `.env.local`
+  and redeploying; the function has read access to the whole application schema, so its blast
+  radius is metadata disclosure if the secret leaks; it must not be extended with write paths
+  without a separate authorization design.
+
+### 14.5 Neon Realtime — chosen approach
+
+- `@neon/realtime` + `@neon/realtime-react` power the dashboard's live ledger.
+  `POST /api/realtime/payments` requires a signed-in user and returns a **sealed capability** for
+  that user's last 20 payments. The SQL and the bound `userId` parameter are sealed server-side;
+  the browser receives only the capability and `NEON_REALTIME_URL`. `NEON_REALTIME_SECRET` never
+  leaves the server.
+- The query is read-only and deterministic: no `now()`, no `random()`, no writes. Realtime is a UX
+  channel only. The ledger still renders from server data and every payment decision is made
+  before the row is written.
+- **Alternatives rejected:** client-side SQL with a database credential (would leak a secret and
+  allow query tampering); polling only (works, but does not demonstrate the integration).
+- **Risks:** the capability is a short-lived bearer token for that exact query; reconnects and
+  expiry need a refresh path; Realtime availability is a UX dependency, not a correctness
+  dependency; the sealed query is the tenant boundary, so any new live query must bind the user id
+  and stay read-only.
+
+### 14.6 CLI and deployment
+
+```bash
+neon init -y --org-id org-weathered-art-78461221 \
+  --project-id purple-waterfall-83699910 \
+  --branch production \
+  --services postgres,auth,object-storage,functions,realtime \
+  --no-agent-setup
+
+neon deploy --env .env.local
+```
+
+`--no-agent-setup` preserved the already-installed Neon skills and the project-level Neon MCP
+entry in `opencode.json`. `neon deploy` applied the function, bucket, Auth and Realtime
+configuration to the `production` branch and pulled 12 Neon variables into `.env.local` without
+removing the app-added `NEON_AUTH_COOKIE_SECRET`, `AGENTSPEND_FUNCTION_SECRET` or
+`NEON_STORAGE_BUCKET`.
+
+**Vercel:** the deployment must define the same variables (`DATABASE_URL`,
+`DATABASE_URL_UNPOOLED`, `NEON_BRANCH`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_JWKS_URL`,
+`NEON_AUTH_COOKIE_SECRET`, `NEON_REALTIME_URL`, `NEON_REALTIME_SECRET`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`,
+`NEON_STORAGE_BUCKET`, `NEON_FUNCTION_HELLO_BASE_URL`, `AGENTSPEND_FUNCTION_SECRET`, plus the
+existing app settings). Until that is done, the Vercel deployment cannot reach Postgres and
+`/login` / `/merchant/login` return 500. `AGENTSPEND_MASTER_KEY` must also be present and stable,
+or the encrypted demo signer material becomes unreadable.
+
+### 14.7 Data migration from the SQLite demo
+
+The live testnet workspace was preserved rather than re-provisioned. A one-off script copied every
+table in FK order from `data/agentspend.db` into Neon Postgres inside one transaction, skipping
+columns that exist only in SQLite. Verified counts: 1 user, 1 vault, 5 agents, 1 policy, 21 payment
+requests, 3 settlements, 76 audit events, 40 settings; all matched. `pnpm seed` then resumed the
+existing workspace (vault `as-vault-mvpk1qc46z3b.testnet`, accounted balance `453267500` base
+units), skipped revoked agents, and replayed the seeded scenarios idempotently.
+
+Two legacy `succeeded` payments predated the `settlements` table. Their vault state was re-read
+from chain (`status: Succeeded`, matching payout and net) and settlement rows were backfilled, so
+their receipts are downloadable. The reconciliation path was also fixed to insert settlement
+evidence when it recovers a payment from chain state; previously it could mark a payment
+`succeeded` without a settlement row.
+
+Fresh deployments do not need the SQLite migration: `pnpm seed` provisions a new workspace and
+`ensureSchema()` creates the Postgres schema on first start.
+
+### 14.8 Verification evidence (2026-10-28)
+
+| Check | Result |
+|---|---|
+| `pnpm --filter @agentspend/web typecheck` | clean |
+| `pnpm test` | 29 passed (21 core + 8 NEAR) |
+| `pnpm test:e2e` against the Neon-backed production server | 25 passed, 0 failed |
+| `pnpm build` | clean; `BUILD_ID` present |
+| Postgres schema | 23 tables present, including `users.email`, `users.neon_user_id`, `settlements.receipt_key` |
+| Neon Auth | email sign-up → `/api/auth/neon-bridge` → dashboard showing `Neon Auth · backend mock rail` |
+| Object Storage | receipt JSON fetched through a presigned URL, HTTP 200, `TESTUSD`, `isCircleUsdc=false` |
+| Neon Function | 401 without secret; authenticated call returned `agentspend-status` with live policy/payment data |
+| Realtime | a new denied $50 payment appeared at the top of the open dashboard without a reload |
+| Browser sweep | `/agents`, `/policy`, `/approvals`, `/transactions`, `/merchants`, `/security`, `/integrations` with no application errors |
+
+### 14.9 Unresolved questions and follow-ups
+
+| # | Question | Why it matters | Status |
+|---|---|---|---|
+| N1 | Vercel environment variables and a Postgres-backed deployment | The hosted deployment still 500s on the login pages | Open |
+| N2 | Require email verification and configure production Auth domains | The bridge currently accepts unverified email accounts | Open |
+| N3 | Rotate the function secret and storage/Auth credentials on a schedule | Long-lived shared secrets | Open |
+| N4 | Add automated tests for the Neon services to CI | Current evidence is manual/browser plus HTTP e2e | Open |
+| N5 | Decide whether to adopt RLS in addition to application-level scoping | Defence in depth for a multi-tenant schema | Open |
+| N6 | Pin `@neondatabase/auth` when it leaves beta | Beta API churn | Open |
+| N7 | Confirm Neon plan limits (connections, Realtime, Functions, Storage) for expected demo traffic | Capacity and cold-start behaviour | Open |
+
+### 14.10 Documentation reviewed (2026-10-28)
+
+- Neon Postgres connection pooling and connection choice:
+  <https://neon.com/docs/connect/connection-pooling.md>,
+  <https://neon.com/docs/connect/choose-connection.md>
+- Neon branching: <https://neon.com/docs/introduction/branching.md>
+- Neon Auth overview, Next.js API-only quick start, production checklist:
+  <https://neon.com/docs/auth/overview.md>,
+  <https://neon.com/docs/auth/quick-start/nextjs-api-only.md>,
+  <https://neon.com/docs/auth/production-checklist.md>
+- Neon Object Storage overview, S3 compatibility, objects:
+  <https://neon.com/docs/storage/overview.md>,
+  <https://neon.com/docs/storage/s3-compatibility.md>,
+  <https://neon.com/docs/storage/objects.md>
+- Neon Functions overview, getting started, authentication, environment variables:
+  <https://neon.com/docs/compute/functions/overview.md>,
+  <https://neon.com/docs/compute/functions/get-started.md>,
+  <https://neon.com/docs/compute/functions/authentication.md>,
+  <https://neon.com/docs/compute/functions/environment-variables.md>
+- Neon Realtime overview, TypeScript SDK, query and reactivity guides:
+  <https://neon.com/docs/realtime/overview.md>,
+  <https://neon.com/docs/realtime/sdks/typescript.md>,
+  <https://neon.com/docs/realtime/guides/queries.md>,
+  <https://neon.com/docs/realtime/guides/reactivity.md>
+- Neon CLI install and inspect: <https://neon.com/docs/cli/install.md>,
+  <https://neon.com/docs/cli/inspect.md>
+- Neon MCP and agent skills: <https://neon.com/docs/ai/connect-mcp-clients-to-neon.md>,
+  <https://neon.com/docs/ai/ai-agents-tools.md>
+
+The installed skill references under `.agents/skills/neon*` mirror the documentation above and are
+committed so future agents can re-check the same constraints without fetching the pages again.

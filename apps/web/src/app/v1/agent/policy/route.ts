@@ -12,12 +12,12 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
-    const agent = agentFromBearer(request);
-    const policy = loadPolicyForAgent(agent.agentId);
+    const agent = await agentFromBearer(request);
+    const policy = await loadPolicyForAgent(agent.agentId);
     if (!policy) {
       return ok({ policy: null, note: "This agent has no active policy. Payments will be denied." });
     }
-    const vault = policy.row.vault_id ? vaultById(policy.row.vault_id) : null;
+    const vault = policy.row.vault_id ? await vaultById(policy.row.vault_id) : null;
     return ok({
       policy: {
         id: policy.row.id,

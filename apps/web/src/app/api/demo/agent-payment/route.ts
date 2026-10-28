@@ -32,7 +32,7 @@ export async function POST(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireCsrfApi(request);
     const body = await readJson(request, schema);
-    const agent = getAgentForUser(body.agentId, user.id);
+    const agent = await getAgentForUser(body.agentId, user.id);
     if (!agent) throw new ApiError(404, "AGENT_NOT_FOUND", "Agent not found.");
     if (agent.status !== "active") {
       throw new ApiError(403, "AGENT_REVOKED", "This agent has been revoked.");
@@ -52,9 +52,9 @@ export async function POST(request: Request): Promise<Response> {
     });
 
     const approval =
-      result.approval ?? getApprovalForPayment(result.payment.id) ?? null;
+      result.approval ?? (await getApprovalForPayment(result.payment.id));
     return ok({
-      payment: paymentView(result.payment),
+      payment: await paymentView(result.payment),
       approval: approval
         ? {
             id: approval.id,

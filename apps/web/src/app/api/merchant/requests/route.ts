@@ -13,7 +13,7 @@ export async function POST(request: Request): Promise<Response> {
     const { merchant } = await requireMerchantCsrfApi(request);
     const body = await readJson(request, schema);
     const key = request.headers.get("idempotency-key")?.trim();
-    const result = createMerchantRequest({
+    const result = await createMerchantRequest({
       merchantId: merchant.merchantId,
       serviceId: body.serviceId,
       idempotencyKey: key || `merchant-${Date.now()}`,

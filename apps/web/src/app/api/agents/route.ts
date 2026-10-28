@@ -13,7 +13,7 @@ const schema = z.object({
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireUserApi(request);
-    return ok({ agents: listAgents(user.id) });
+    return ok({ agents: await listAgents(user.id) });
   });
 }
 

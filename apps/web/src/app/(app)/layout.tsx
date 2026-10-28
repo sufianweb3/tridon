@@ -11,9 +11,9 @@ import { LogoutButton } from "@/components/actions";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const { user } = await requireUserPage();
-  const vault = vaultForUser(user.id);
-  const pending = countPendingApprovals(user.id);
-  const demo = setting("demo.user_id", "") === user.id;
+  const vault = await vaultForUser(user.id);
+  const pending = await countPendingApprovals(user.id);
+  const demo = (await setting("demo.user_id", "")) === user.id;
   const rail = vault?.rail ?? "mock";
 
   return (
@@ -31,8 +31,8 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
               </p>
             ) : (
               <p className="rounded-lg border border-blue/20 bg-blue-soft/50 px-2.5 py-2 text-[10px] leading-4 text-blue">
-                Wallet session. The mock rail enforces limits in this backend only; no vault key
-                is requested.
+                Backend-only session. The mock rail enforces limits in this backend only; no
+                vault key is requested.
               </p>
             )}
           </div>
@@ -45,7 +45,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-medium">{user.displayName}</div>
               <div className="truncate font-mono text-[9px] text-muted">
-                {shortAccount(user.wallet)}
+                {user.wallet ? shortAccount(user.wallet) : "Neon Auth · backend mock rail"}
               </div>
             </div>
           </div>

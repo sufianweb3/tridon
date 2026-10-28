@@ -4,7 +4,7 @@ import type {
   Policy,
   UnknownMerchantMode,
 } from "@agentspend/core";
-import { getDb } from "./db";
+import { query, queryOne } from "./db";
 
 export interface PolicyRow {
   id: string;
@@ -48,55 +48,53 @@ export interface LoadedPolicy {
   selectedMerchantIds: Set<string>;
 }
 
-export function loadPolicyById(policyId: string): LoadedPolicy | null {
-  const row = getDb().prepare("SELECT * FROM policies WHERE id = ?").get(policyId) as
-    | PolicyRow
-    | undefined;
+export async function loadPolicyById(policyId: string): Promise<LoadedPolicy | null> {
+  const row = await queryOne<PolicyRow>("SELECT * FROM policies WHERE id = ?", [policyId]);
   if (!row) return null;
-  return { row, ...loadRules(policyId) };
+  return { row, ...(await loadRules(policyId)) };
 }
 
-export function loadPolicyForVault(vaultId: string): LoadedPolicy | null {
-  const row = getDb()
-    .prepare(
-      "SELECT * FROM policies WHERE vault_id = ? AND status != 'revoked' ORDER BY created_at DESC LIMIT 1",
-    )
-    .get(vaultId) as PolicyRow | undefined;
+export async function loadPolicyForVault(vaultId: string): Promise<LoadedPolicy | null> {
+  const row = await queryOne<PolicyRow>(
+    "SELECT * FROM policies WHERE vault_id = ? AND status != 'revoked' ORDER BY created_at DESC LIMIT 1",
+    [vaultId],
+  );
   if (!row) return null;
-  return { row, ...loadRules(row.id) };
+  return { row, ...(await loadRules(row.id)) };
 }
 
 /**
  * A vault has exactly one on-chain policy. Agents are distinct signing
  * identities under that policy, not separate budgets.
  */
-export function loadPolicyForAgent(agentId: string): LoadedPolicy | null {
-  const row = getDb()
-    .prepare(
-      `SELECT p.* FROM policies p
-       JOIN agents a ON a.vault_id = p.vault_id
-       WHERE a.id = ? AND p.status != 'revoked'
-       ORDER BY p.created_at DESC LIMIT 1`,
-    )
-    .get(agentId) as PolicyRow | undefined;
+export async function loadPolicyForAgent(agentId: string): Promise<LoadedPolicy | null> {
+  const row = await queryOne<PolicyRow>(
+    `SELECT p.* FROM policies p
+     JOIN agents a ON a.vault_id = p.vault_id
+     WHERE a.id = ? AND p.status != 'revoked'
+     ORDER BY p.created_at DESC LIMIT 1`,
+    [agentId],
+  );
   if (!row) return null;
-  return { row, ...loadRules(row.id) };
+  return { row, ...(await loadRules(row.id)) };
 }
 
-export function loadPoliciesForUser(userId: string): LoadedPolicy[] {
-  const rows = getDb()
-    .prepare("SELECT * FROM policies WHERE user_id = ? ORDER BY created_at DESC")
-    .all(userId) as unknown as PolicyRow[];
-  return rows.map((row) => ({ row, ...loadRules(row.id) }));
+export async function loadPoliciesForUser(userId: string): Promise<LoadedPolicy[]> {
+  const rows = await query<PolicyRow>(
+    "SELECT * FROM policies WHERE user_id = ? ORDER BY created_at DESC",
+    [userId],
+  );
+  return Promise.all(rows.map(async (row) => ({ row, ...(await loadRules(row.id)) })));
 }
 
-function loadRules(policyId: string): {
+async function loadRules(policyId: string): Promise<{
   rules: PolicyRuleRow[];
   selectedMerchantIds: Set<string>;
-} {
-  const rules = getDb()
-    .prepare("SELECT * FROM policy_merchant_rules WHERE policy_id = ? ORDER BY created_at")
-    .all(policyId) as unknown as PolicyRuleRow[];
+}> {
+  const rules = await query<PolicyRuleRow>(
+    "SELECT * FROM policy_merchant_rules WHERE policy_id = ? ORDER BY created_at",
+    [policyId],
+  );
   const selectedMerchantIds = new Set(
     rules.filter((rule) => rule.requires_approval === 1).map((rule) => rule.merchant_id),
   );

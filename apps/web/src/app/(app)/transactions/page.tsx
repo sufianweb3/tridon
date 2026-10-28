@@ -4,7 +4,7 @@ import { formatUsd } from "@agentspend/core";
 import { requireUserPage } from "@/lib/server-auth";
 import { listPayments } from "@/lib/payments";
 import { paymentView } from "@/lib/views";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 import { timeAgo } from "@/lib/format";
 import {
   Callout,
@@ -36,14 +36,13 @@ export default async function TransactionsPage({
   const { user } = await requireUserPage();
   const params = await searchParams;
   const status = params.status && params.status !== "all" ? params.status : null;
-  const rows = listPayments({ userId: user.id, limit: 100, status });
-  const payments = rows.map(paymentView);
+  const rows = await listPayments({ userId: user.id, limit: 100, status });
+  const payments = await Promise.all(rows.map(paymentView));
 
-  const counts = getDb()
-    .prepare(
-      `SELECT status, COUNT(*) AS count FROM payment_requests WHERE user_id = ? GROUP BY status`,
-    )
-    .all(user.id) as unknown as Array<{ status: string; count: number }>;
+  const counts = await query<{ status: string; count: number }>(
+    `SELECT status, COUNT(*) AS count FROM payment_requests WHERE user_id = ? GROUP BY status`,
+    [user.id],
+  );
   const byStatus = new Map(counts.map((row) => [row.status, row.count]));
   const total = counts.reduce((sum, row) => sum + row.count, 0);
   const succeeded = byStatus.get("succeeded") ?? 0;

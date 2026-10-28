@@ -18,7 +18,7 @@ const schema = z.object({
 
 export async function POST(request: Request): Promise<Response> {
   return withApi(async () => {
-    const agent = agentFromBearer(request);
+    const agent = await agentFromBearer(request);
     const limit = checkRateLimit(
       `agent:${agent.agentId}:${requestIp(request)}`,
       appConfig.limits.agentRequestsPerMinute,
@@ -49,8 +49,8 @@ export async function POST(request: Request): Promise<Response> {
       actor: "agent",
     });
 
-    const approval = getApprovalForPayment(result.payment.id);
-    const view = paymentView(result.payment);
+    const approval = await getApprovalForPayment(result.payment.id);
+    const view = await paymentView(result.payment);
     const status =
       result.payment.status === "awaiting_approval"
         ? 202
@@ -90,7 +90,7 @@ export async function POST(request: Request): Promise<Response> {
 
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
-    agentFromBearer(request);
+    await agentFromBearer(request);
     return ok({ hint: "Use POST to create a payment request." });
   });
 }

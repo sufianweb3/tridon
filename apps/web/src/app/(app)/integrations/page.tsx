@@ -3,12 +3,13 @@ import { ArrowUpRight, KeyRound, Webhook } from "lucide-react";
 import { requireUserPage } from "@/lib/server-auth";
 import { listAgents } from "@/lib/agents";
 import { policyForUser, ruleForMerchant } from "@/lib/policies";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 import { merchantServices } from "@/lib/seed-data";
 import { vaultForUser } from "@/lib/platform";
 import { Callout, PageHeader, RailBadge } from "@/components/ui";
 import { CopyButton } from "@/components/actions";
 import { AgentConsole } from "@/components/agent-console";
+import { NeonFunctionCheck } from "@/components/neon-function-check";
 
 export const metadata = { title: "Agent API" };
 export const dynamic = "force-dynamic";
@@ -28,27 +29,30 @@ export default async function IntegrationsPage({
 }) {
   const { user, session } = await requireUserPage();
   const params = await searchParams;
-  const agents = listAgents(user.id);
-  const vault = vaultForUser(user.id);
-  const policy = policyForUser(user.id);
-  const merchants = getDb()
-    .prepare("SELECT id, name, category FROM merchants WHERE active = 1 ORDER BY name")
-    .all() as unknown as Array<{ id: string; name: string; category: string }>;
+  const agents = await listAgents(user.id);
+  const vault = await vaultForUser(user.id);
+  const policy = await policyForUser(user.id);
+  const merchants = await query<{ id: string; name: string; category: string }>(
+    "SELECT id, name, category FROM merchants WHERE active = 1 ORDER BY name",
+  );
 
-  const options = merchants.map((merchant) => {
-    const rule = policy ? ruleForMerchant(policy, merchant.id) : null;
-    return {
-      id: merchant.id,
-      name: merchant.name,
-      category: merchant.category,
-      allowlisted: rule?.allowlisted === 1,
-      services: merchantServices(merchant.id).map((service) => ({
-        id: service.id,
-        name: service.name,
-        price: service.price,
-      })),
-    };
-  });
+  const options = await Promise.all(
+    merchants.map(async (merchant) => {
+      const rule = policy ? ruleForMerchant(policy, merchant.id) : null;
+      const services = await merchantServices(merchant.id);
+      return {
+        id: merchant.id,
+        name: merchant.name,
+        category: merchant.category,
+        allowlisted: rule?.allowlisted === 1,
+        services: services.map((service) => ({
+          id: service.id,
+          name: service.name,
+          price: service.price,
+        })),
+      };
+    }),
+  );
 
   return (
     <div className="space-y-7">
@@ -101,6 +105,8 @@ export default async function IntegrationsPage({
         initialServiceId={params.service}
         defaultOpen
       />
+
+      <NeonFunctionCheck />
 
       <section className="card-solid overflow-hidden">
         <div className="border-b border-line bg-paper-deep/50 px-5 py-4">

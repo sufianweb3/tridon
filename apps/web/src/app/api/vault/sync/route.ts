@@ -5,7 +5,7 @@ import { syncVaultBalance, vaultForUser, vaultTokenBalance } from "@/lib/platfor
 export async function POST(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireCsrfApi(request);
-    const vault = vaultForUser(user.id);
+    const vault = await vaultForUser(user.id);
     if (!vault) throw new ApiError(404, "VAULT_NOT_FOUND", "No vault exists for this account.");
     if (vault.rail !== "testnet") {
       return ok({

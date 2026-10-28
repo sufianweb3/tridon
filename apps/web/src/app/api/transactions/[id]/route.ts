@@ -21,10 +21,10 @@ export async function GET(
   return withApi(async () => {
     const { user } = await requireUserApi(request);
     const { id } = await params;
-    const detail = paymentDetail(id, user.id);
+    const detail = await paymentDetail(id, user.id);
     if (!detail) throw new ApiError(404, "PAYMENT_NOT_FOUND", "Payment not found.");
     return ok({
-      payment: paymentView(detail.payment),
+      payment: await paymentView(detail.payment),
       merchant: detail.merchant
         ? {
             id: detail.merchant.id,

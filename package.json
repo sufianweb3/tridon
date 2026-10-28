@@ -13,12 +13,18 @@
     "lint": "pnpm --filter @agentspend/web lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @agentspend/core test && pnpm --filter @agentspend/near test",
-    "test:e2e": "tsx scripts/e2e.ts",
-    "db:reset": "tsx scripts/reset-db.ts",
-    "seed": "tsx scripts/seed.ts"
+    "test:e2e": "tsx --env-file-if-exists=.env.local scripts/e2e.ts",
+    "db:reset": "tsx --env-file-if-exists=.env.local scripts/reset-db.ts",
+    "seed": "tsx --env-file-if-exists=.env.local scripts/seed.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@neon/config": "^1.9.4",
+    "@neon/env": "^1.6.5",
+    "@neon/functions": "^0.11.0",
+    "pg": "^8.23.1"
   }
 }

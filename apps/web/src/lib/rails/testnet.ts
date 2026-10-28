@@ -5,19 +5,19 @@ import {
   type VaultPaymentView,
 } from "@agentspend/near";
 import { decryptSecret } from "../crypto";
-import { getDb, setting } from "../db";
+import { queryOne, setting } from "../db";
 import { failedResult, unknownResult, type PaymentRail, type RailExecutionResult, type RailPaymentInput } from "./types";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function agentSecret(agentId: string): string | null {
-  const row = getDb()
-    .prepare("SELECT key_ciphertext, key_iv, key_tag FROM agents WHERE id = ?")
-    .get(agentId) as
-    | { key_ciphertext: string | null; key_iv: string | null; key_tag: string | null }
-    | undefined;
+async function agentSecret(agentId: string): Promise<string | null> {
+  const row = await queryOne<{
+    key_ciphertext: string | null;
+    key_iv: string | null;
+    key_tag: string | null;
+  }>("SELECT key_ciphertext, key_iv, key_tag FROM agents WHERE id = ?", [agentId]);
   if (row?.key_ciphertext && row.key_iv && row.key_tag) {
     try {
       return decryptSecret({
@@ -29,7 +29,7 @@ function agentSecret(agentId: string): string | null {
       // fall through to the demo setting
     }
   }
-  return setting(`demo.agent.${agentId}.secret`, "") || null;
+  return (await setting(`demo.agent.${agentId}.secret`, "")) || null;
 }
 
 function parseEvent(log: string): Record<string, unknown> | null {
@@ -209,7 +209,7 @@ export const testnetRail: PaymentRail = {
     if (input.vault.rail !== "testnet") {
       return failedResult("This vault is not on the live testnet rail.");
     }
-    const secretKey = input.agent.secretKey ?? agentSecret(input.agent.id);
+    const secretKey = input.agent.secretKey ?? (await agentSecret(input.agent.id));
     if (!secretKey) {
       return failedResult("The agent signing key is unavailable. Nothing was submitted.");
     }

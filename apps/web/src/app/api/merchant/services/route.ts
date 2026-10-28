@@ -18,7 +18,7 @@ export async function POST(request: Request): Promise<Response> {
     if (BigInt(price) > 10_000_000_000n) {
       throw new ApiError(400, "INVALID_AMOUNT", "Demo service prices are capped at $10,000.");
     }
-    const service = createMerchantService({
+    const service = await createMerchantService({
       merchantId: merchant.merchantId,
       name: body.name,
       description: body.description,

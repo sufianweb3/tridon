@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowRight, Check, CircleSlash, Lock, Store } from "lucide-react";
 import { formatUsd } from "@agentspend/core";
 import { requireUserPage } from "@/lib/server-auth";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 import { policyForUser, ruleForMerchant } from "@/lib/policies";
 import { merchantServices } from "@/lib/seed-data";
 import { shortAccount } from "@/lib/format";
@@ -29,10 +29,15 @@ interface MerchantRow {
 
 export default async function MerchantsPage() {
   const { user } = await requireUserPage();
-  const policy = policyForUser(user.id);
-  const merchants = getDb()
-    .prepare("SELECT * FROM merchants WHERE active = 1 ORDER BY name")
-    .all() as unknown as MerchantRow[];
+  const policy = await policyForUser(user.id);
+  const merchants = await query<MerchantRow>(
+    "SELECT * FROM merchants WHERE active = 1 ORDER BY name",
+  );
+  const servicesByMerchant = new Map(
+    await Promise.all(
+      merchants.map(async (merchant) => [merchant.id, await merchantServices(merchant.id)] as const),
+    ),
+  );
 
   return (
     <div className="space-y-7">
@@ -79,7 +84,7 @@ export default async function MerchantsPage() {
         <div className="grid gap-4 lg:grid-cols-2">
           {merchants.map((merchant) => {
             const rule = policy ? ruleForMerchant(policy, merchant.id) : null;
-            const services = merchantServices(merchant.id);
+            const services = servicesByMerchant.get(merchant.id) ?? [];
             const demoFailure = merchant.id === "merchant-fail";
             return (
               <article key={merchant.id} className="card-solid overflow-hidden">

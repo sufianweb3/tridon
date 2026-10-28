@@ -7,6 +7,6 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request): Promise<Response> {
   return withApi(async () => {
     const { user } = await requireUserApi(request);
-    return ok(userOverview(user.id, user));
+    return ok(await userOverview(user.id, user));
   });
 }

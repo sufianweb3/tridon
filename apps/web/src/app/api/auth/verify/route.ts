@@ -29,7 +29,7 @@ export async function POST(request: Request): Promise<Response> {
       throw new ApiError(429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
     }
     const body = await readJson(request, schema);
-    const message = consumeAuthNonce(body.wallet, body.nonce);
+    const message = await consumeAuthNonce(body.wallet, body.nonce);
     if (!message) {
       throw new ApiError(
         401,
@@ -64,11 +64,11 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    const user = findOrCreateWalletUser(body.wallet);
+    const user = await findOrCreateWalletUser(body.wallet);
     // Wallet sessions use the clearly labelled mock rail. The platform never
     // asks for, receives or stores this wallet's signing key.
-    ensureMockWorkspace(user.id, body.wallet);
-    const session = createUserSession({
+    await ensureMockWorkspace(user.id, body.wallet);
+    const session = await createUserSession({
       userId: user.id,
       wallet: body.wallet,
       authMethod: "nep413",

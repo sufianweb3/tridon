@@ -16,15 +16,15 @@ export async function POST(): Promise<Response> {
     if (!appConfig.demoEnabled) {
       throw new ApiError(404, "DEMO_DISABLED", "Demo sign-in is disabled.");
     }
-    const user = demoUser();
-    if (!user || setting("demo.vault.initialized", "") !== "1") {
+    const user = await demoUser();
+    if (!user || (await setting("demo.vault.initialized", "")) !== "1") {
       throw new ApiError(
         409,
         "DEMO_NOT_SEEDED",
         "The demo workspace is not ready. Run `pnpm seed` first.",
       );
     }
-    const session = createUserSession({
+    const session = await createUserSession({
       userId: user.id,
       wallet: user.wallet,
       authMethod: "demo",
